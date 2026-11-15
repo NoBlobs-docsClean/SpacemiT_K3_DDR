@@ -55,7 +55,63 @@ Each rank has four one-byte margin results, in this order: `RxClkDly`, `VrefDac`
 | B0 | `0x52`–`0x55` |
 | B1 | `0x56`–`0x59` |
 
-Each value is the smallest distance from the trained center to the failing region in that dimension. A small value therefore indicates little margin, but these documents do not establish a universal pass/fail threshold.
+Each value is the smallest distance from the trained center to the failing region in that dimension. A small value therefore indicates little margin, but these documents do not establish a universal pass/fail threshold. Note that **the trained VREF codes and four eye margins per rank are stored in the 320-byte message block (`0x33`–`0x3e` and `0x4e`–`0x59`), not in the 5,170-entry `phypara` array**.
+
+### Reference 6400 MT/s message-block inputs and trained outputs (`DDR0` and `DDR1`)
+
+In the reference 6400 MT/s dual-rank x16 training envelope (`bootinfo+0x10000`, `magic = 0x54524444`, `crc32 = 0x0f7e240d`), the 320-byte message blocks captured from `DDR0` (envelope offset `0x0080`) and `DDR1` (envelope offset `0x4a24`) hold identical host configuration inputs and distinct per-controller trained VREF and eye-margin outputs:
+
+| Offset | Field | Dir | `DDR0` (`PMU0`) | `DDR1` (`PMU1`) | Meaning |
+|---:|---|---|---:|---:|---|
+| `0x00` | `Reserved00` | In | `0x00` | `0x00` | Reserved byte at offset `0x00` |
+| `0x01` | `MsgMisc` | In | `0x01` | `0x01` | `MsgMisc[0] = MTESTEnable = 1` (`MsgMisc[1] = 0`, `MsgMisc[3] = 0`, `MsgMisc[7] = 0`) |
+| `0x02` | `PmuRevision` | Out | `0x2409` | `0x2409` | Firmware revision written by PMU |
+| `0x04` | `Pstate` | In | `0x30` | `0x30` | P-state `0` with `bit 5` (`0x20`, `QBPll*` read-back) and `bit 4` (`0x10`) set |
+| `0x05` | `PllBypassEn` | In | `0x00` | `0x00` | Normal PHY PLL mode (`0`) |
+| `0x06` | `DRAMFreq` | In | `0x1900` (`6400`) | `0x1900` (`6400`) | Data rate in MT/s |
+| `0x08` | `DfiFreqRatio` | In | `0x04` | `0x04` | `1:4` DFI-to-CK ratio (`800 MHz` DFI clock) |
+| `0x0a` | `PhyOdtImpedance` | In | `0x00` | `0x00` | Use pre-training table / `io_override` impedance |
+| `0x0b` | `PhyDrvImpedance` | In | `0x00` | `0x00` | Use pre-training table / `io_override` impedance |
+| `0x0c` | `BPZNResVal` | In | `0x00` | `0x00` | Use default calibration resistor |
+| `0x0d` | `Misc` | In | `0x00` | `0x00` | `Misc[0]` post-reset `MemResetL` control (`0` in SPI envelope) |
+| `0x0e` | `Train2DMisc` | In | `0x04` | `0x04` | 2D optimization enabled |
+| `0x0f` | `CsTestFail` | Out | `0x00` | `0x00` | `0` = all populated ranks passed |
+| `0x10` | `SequenceCtrl` | In | `0x125f` | `0x125f` | `DevInit + WrLvl + RxEn + RdDQS + WrDq + DRAM DCA + MxRdLat + LPCA` |
+| `0x12` | `HdtCtrl` | In | `0x04` | `0x04` | Detailed debug verbosity threshold |
+| `0x16` | `DFIMRLMargin` | In | `0x01` | `0x01` | `+1` DFI clock added to trained MRL |
+| `0x17` | `Tx2D_Delay_Weight` | In | `0x01` | `0x01` | 2D TX delay weight |
+| `0x18` | `Tx2D_Voltage_Weight` | In | `0x01` | `0x01` | 2D TX voltage weight |
+| `0x19` | `Quickboot` | In | `0x00` | `0x00` | `0` = full training |
+| `0x20` | `Rx2D_Delay_Weight` | In | `0x01` | `0x01` | 2D RX delay weight |
+| `0x21` | `Rx2D_Voltage_Weight` | In | `0x01` | `0x01` | 2D RX voltage weight |
+| `0x24` | `EnabledDQsChA` | In | `0x10` (`16`) | `0x10` (`16`) | 16 DQs enabled on Channel A |
+| `0x25` | `CsPresentChA` | In | `0x03` | `0x03` | Ranks 0 and 1 present on Channel A |
+| `0x33` | `TrainedVREFCA_A0` | Out | `0x27` (`39`) | `0x27` (`39`) | Trained CA VREF for ChA rank 0 |
+| `0x34` | `TrainedVREFCA_A1` | Out | `0x27` (`39`) | `0x27` (`39`) | Trained CA VREF for ChA rank 1 |
+| `0x35` | `TrainedVREFDQ_A0` | Out | `0x26` (`38`) | `0x26` (`38`) | Trained DQ VREF for ChA rank 0 |
+| `0x36` | `TrainedVREFDQ_A1` | Out | `0x26` (`38`) | `0x25` (`37`) | Trained DQ VREF for ChA rank 1 |
+| `0x37` | `RxClkDly_Margin_A0` | Out | `0x14` (`20`) | `0x16` (`22`) | ChA rank 0 RX timing margin (taps) |
+| `0x38` | `VrefDac_Margin_A0` | Out | `0x27` (`39`) | `0x21` (`33`) | ChA rank 0 RX VREF margin (DAC steps) |
+| `0x39` | `TxDqDly_Margin_A0` | Out | `0x16` (`22`) | `0x17` (`23`) | ChA rank 0 TX timing margin (taps) |
+| `0x3a` | `DeviceVref_Margin_A0` | Out | `0x20` (`32`) | `0x20` (`32`) | ChA rank 0 DRAM VREF margin (DAC steps) |
+| `0x3b` | `RxClkDly_Margin_A1` | Out | `0x14` (`20`) | `0x14` (`20`) | ChA rank 1 RX timing margin (taps) |
+| `0x3c` | `VrefDac_Margin_A1` | Out | `0x24` (`36`) | `0x25` (`37`) | ChA rank 1 RX VREF margin (DAC steps) |
+| `0x3d` | `TxDqDly_Margin_A1` | Out | `0x16` (`22`) | `0x18` (`24`) | ChA rank 1 TX timing margin (taps) |
+| `0x3e` | `DeviceVref_Margin_A1` | Out | `0x20` (`32`) | `0x22` (`34`) | ChA rank 1 DRAM VREF margin (DAC steps) |
+| `0x3f` | `EnabledDQsChB` | In | `0x10` (`16`) | `0x10` (`16`) | 16 DQs enabled on Channel B |
+| `0x40` | `CsPresentChB` | In | `0x03` | `0x03` | Ranks 0 and 1 present on Channel B |
+| `0x4e` | `TrainedVREFCA_B0` | Out | `0x27` (`39`) | `0x27` (`39`) | Trained CA VREF for ChB rank 0 |
+| `0x4f` | `TrainedVREFCA_B1` | Out | `0x27` (`39`) | `0x27` (`39`) | Trained CA VREF for ChB rank 1 |
+| `0x50` | `TrainedVREFDQ_B0` | Out | `0x26` (`38`) | `0x28` (`40`) | Trained DQ VREF for ChB rank 0 |
+| `0x51` | `TrainedVREFDQ_B1` | Out | `0x28` (`40`) | `0x26` (`38`) | Trained DQ VREF for ChB rank 1 |
+| `0x52` | `RxClkDly_Margin_B0` | Out | `0x14` (`20`) | `0x14` (`20`) | ChB rank 0 RX timing margin (taps) |
+| `0x53` | `VrefDac_Margin_B0` | Out | `0x23` (`35`) | `0x22` (`34`) | ChB rank 0 RX VREF margin (DAC steps) |
+| `0x54` | `TxDqDly_Margin_B0` | Out | `0x16` (`22`) | `0x16` (`22`) | ChB rank 0 TX timing margin (taps) |
+| `0x55` | `DeviceVref_Margin_B0` | Out | `0x20` (`32`) | `0x1c` (`28`) | ChB rank 0 DRAM VREF margin (DAC steps) |
+| `0x56` | `RxClkDly_Margin_B1` | Out | `0x12` (`18`) | `0x13` (`19`) | ChB rank 1 RX timing margin (taps) |
+| `0x57` | `VrefDac_Margin_B1` | Out | `0x21` (`33`) | `0x25` (`37`) | ChB rank 1 RX VREF margin (DAC steps) |
+| `0x58` | `TxDqDly_Margin_B1` | Out | `0x16` (`22`) | `0x15` (`21`) | ChB rank 1 TX timing margin (taps) |
+| `0x59` | `DeviceVref_Margin_B1` | Out | `0x1c` (`28`) | `0x20` (`32`) | ChB rank 1 DRAM VREF margin (DAC steps) |
 
 ### Additional LPDDR5 results
 
@@ -102,9 +158,11 @@ The **107 `CHANGED` entries** (comparing the base pre-training table + topology 
 
 In addition, per-lane and per-rank trained CSRs in group `0x01` that are **not** present in the host pre-training table—such as write-leveling `0x0c`/`0x0d` (`0x009a`/`0x009b`), write DQ delays `0x10..0x13` (`0x0105`–`0x011a`), read/write offsets `0x1c..0x1f`, `0x24..0x27`, per-bit DCA delays `0x68..0x6f` (shifted by ~+4 taps during `DRAM DCA`), `0x01<r>0ad` (`0x0002` at `ARC 0x9002015a + r * 0x2000`, written during `Step 3.6` per-rank DQ calibration), `0x01<r>0d9` (`0x009c` = `156`, written across all active ranks right after `0x020187`), and `0xaa`/`0xb5`/`0xbe`—are classified under `host-untouched-nz` (written from `0x0000` by the PMU during training). Note that `CSR[0x01<r>0a3]` (`0x0b33` across `r = 0..3`, `2867` decimal in the first `phypara` slot) is written by the host pre-training table *before* the PMU starts, saved to DMEM `0x80000430`–`0x80000437`, temporarily masked `&= 0x000c` during `DevInit` Phase 3, and restored to `0x0b33`, so `0x01<r>0a3` belongs to `pre-unchanged`.
 
-### Measured `CSR[0x4e]` / `CSR[0x4f]` read-eye center table (6400 MT/s reference)
+### Measured `CSR[0x4e]` / `CSR[0x4f]` read-eye center tables (`DDR0` and `DDR1`, 6400 MT/s reference)
 
-On the reference 6400 MT/s dual-rank x16 board (`TX DS = 30 Ω`, `RX ODT = 60 Ω`), the 36 lanes (`rank = 0..3`, `lane = 0..8`) start at `0x35/0x35` before training and converge to the following `0x4e/0x4f` hex pairs (`0x2d`–`0x4a`, mean ~`0x3e.5` = 62.5 taps):
+On the reference 6400 MT/s dual-rank x16 board (`TX DS = 30 Ω`, `RX ODT = 60 Ω`), the 36 lanes (`rank = 0..3`, `lane = 0..8`) on both controllers start at `0x35/0x35` before training and converge to the following per-controller `0x4e/0x4f` hex pairs (`0x2d`–`0x4a` on `DDR0`, median `62.5` taps; `0x36`–`0x49` on `DDR1`, median `62.0` taps):
+
+#### Controller 0 (`DDR0` / `PMU0`, envelope offset `0x0080`)
 
 | Rank (`0x01<r><l>4e/4f`) | `L0` | `L1` | `L2` | `L3` | `L4` | `L5` | `L6` | `L7` | `L8` |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -112,6 +170,39 @@ On the reference 6400 MT/s dual-rank x16 board (`TX DS = 30 Ω`, `RX ODT = 60 Ω
 | Rank 1 (`0x011<l>4e/4f`) | `43/3d` | `3c/42` | `3a/49` | `36/41` | `47/3f` | `40/40` | `43/45` | `44/3a` | `3a/3f` |
 | Rank 2 (`0x012<l>4e/4f`) | `44/3d` | `38/3a` | `42/3d` | `3b/2d` | `3f/40` | `48/3e` | `44/3f` | `3e/38` | `3a/43` |
 | Rank 3 (`0x013<l>4e/4f`) | `42/43` | `4a/3d` | `3a/3e` | `47/40` | `45/44` | `38/46` | `40/38` | `3d/3f` | `41/37` |
+
+#### Controller 1 (`DDR1` / `PMU1`, envelope offset `0x4a24`)
+
+| Rank (`0x01<r><l>4e/4f`) | `L0` | `L1` | `L2` | `L3` | `L4` | `L5` | `L6` | `L7` | `L8` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Rank 0 (`0x010<l>4e/4f`) | `48/39` | `3c/3f` | `41/41` | `3e/3c` | `49/3e` | `49/39` | `46/3c` | `3c/39` | `3f/44` |
+| Rank 1 (`0x011<l>4e/4f`) | `43/38` | `43/45` | `3a/3f` | `40/39` | `43/3d` | `3b/3c` | `3e/3a` | `3f/41` | `3d/41` |
+| Rank 2 (`0x012<l>4e/4f`) | `48/44` | `39/46` | `3d/48` | `44/36` | `3d/40` | `45/46` | `46/3e` | `3b/3a` | `3b/48` |
+| Rank 3 (`0x013<l>4e/4f`) | `40/3c` | `43/3b` | `3a/43` | `44/39` | `41/3f` | `38/37` | `43/3c` | `46/37` | `36/43` |
+
+On both controllers (`DDR0` and `DDR1`), all 72 `CSR[0x01<r><l>50]` and `CSR[0x01<r><l>51]` registers remain at `0x0035` (`53` decimal) when `DisableTrainingLoop[1] == 0`.
+
+### Key calibrated `phypara` registers across `DDR0` and `DDR1` (6400 MT/s reference)
+
+| CSR index | ARC address | Pre-training seed | `DDR0` (`PMU0`) post-training | `DDR1` (`PMU1`) post-training | Meaning |
+|---:|---:|---:|---:|---:|---|
+| `0x01<r>0a3` | `0x90020146 + r*0x2000` | `0x0b33` (`2867`) | `0x0b33` | `0x0b33` | Saved at `0x80000430 + 2*r` in `Step 3.3`, masked `&= 0x000c`, restored in `Step 6.3` |
+| `0x01<r>0ad` | `0x9002015a + r*0x2000` | `0x0000` | `0x0002` | `0x0002` | `Step 3.6` per-rank DQ step code `k` (`2` across all 4 ranks) |
+| `0x0100d5` | `0x900201aa` | `0x0000` | `0x0041` (`65`) | `0x0042` (`66`) | Rank-0 calibration reference read after pulsing `0x0100ac` in `Step 3.6` |
+| `0x01<r>0d9` | `0x900201b2 + r*0x2000` | `0x0000` | `0x009c` (`156`) | `0x009c` (`156`) | Written across all active ranks in `Step 3.7` |
+| `0x02000a` | `0x90040014` | `0x0040` (`64`) | `0x0082` (`130`) | `0x007f` (`127`) | Latched CA period counter `CSR[0x0300bf] & 0x01ff` |
+| `0x020017` | `0x9004002e` | `0x0040` (`64`) | `0x0040` (`64`) | `0x003e` (`62`) | Latched DQ period counter `CSR[0x0100e0] & 0x01ff` |
+| `0x020011` | `0x90040022` | `0x006f` | `0x000f` | `0x000f` | Masked `& 0xff9f` in `Step 3.3` (`0x006f` saved at `0x8000042a`) |
+| `0x020012` | `0x90040024` | `0xa1a1` | `0x7353` | `0x7353` | Primary frequency bucket `(bucket3 << 12) \| (fine_hi << 8) \| coarse \| fine_lo` |
+| `0x020060` | `0x900400c0` | `0x0000` | `0x0001` | `0x0001` | `MemResetL` state (`0 -> 2 -> 3 -> 1`) |
+| `0x020077` | `0x900400ee` | `0x0001` | `0x0000` | `0x0000` | Cleared by hardware when `CSR[0x02f077] = 0` is strobed |
+| `0x020186` | `0x9004030c` | `0x00a1` | `0x0073` | `0x0073` | Secondary frequency bucket `(bucket3 << 4) \| fine_hi` |
+| `0x020187` | `0x9004030e` | `0x0040` | `0x0041` (`65`) | `0x0042` (`66`) | Copied unmasked from `CSR[0x0100d5]` in `Step 3.7` |
+| `0x090808` | `0x90121010` | `0x0000` | `0x3b01` | `0x3b01` | `(CSR[0x020314] << 8) \| 1` (`Step 6.1`) |
+| `0x090813` | `0x90121026` | `0x0000` | `0x8301` | `0x8301` | `(CSR[0x020315] << 8) \| 1` (`Step 6.1`) |
+| `0x09080b` | `0x90121016` | `0x002f` | `0x000f` | `0x000f` | Masked `& 0xff9f` in `Step 6.1` |
+| `0x09080c` | `0x90121018` | `0x006f` | `0x000f` | `0x000f` | Masked `& 0xff9f` in `Step 6.1` |
+| `0x0c0086` | `0x9018010c` | `0x0000` | `0x0002` | `0x0002` | Sticky hardware status (`2` after full training, `3` after `DevInit`) |
 
 ### Hardware power-on mirror group `0x110000` (`ARC 0x90220000`)
 
@@ -138,12 +229,13 @@ The PMU publishes major message `0x07` on normal completion. `CsTestFail` and a 
 
 The captured LPDDR5 envelope from the two-rank, 6400 MT/s reference board (`MT62F2G32D4DS`, envelope header `magic = 0x54524444`, `crc32 = 0x0f7e240d`, `chipid = 0x2000000000000000`, `version = 0`, `type = 1`, `cs_num = 2`, `data_rate = 6400`; controller records at envelope offsets `0x80` and `0x4a24`) contains the following per-controller values:
 
-| Property | DDR0 | DDR1 |
+| Property | DDR0 (`PMU0`) | DDR1 (`PMU1`) |
 |---|---|---|
-| `MsgMisc` | `0x01` | `0x01` |
-| `HdtCtrl` | `0x04` | `0x04` |
-| Nonzero `phypara` entries | 3926 of 5170 | 3926 of 5170 |
-| Nonzero ACSM entries | 1845 of 4096 | 1845 of 4096 |
+| `MsgMisc` (byte `0x01`) | `0x01` | `0x01` |
+| `HdtCtrl` (byte `0x12`) | `0x04` | `0x04` |
+| Nonzero `phypara` entries | `3926` of `5170` | `3927` of `5170` |
+| Nonzero ACSM entries | `1845` of `4096` | `1845` of `4096` |
+| Entries differing between `DDR0` and `DDR1` | `325` of `5170` `phypara` halfwords | `938` of `4096` ACSM halfwords |
 
 The first twelve `phypara` halfword values in each record are:
 
@@ -153,7 +245,7 @@ The first twelve ACSM halfword values in each record are:
 
 `0, 0, 0, 0, 0, 0, 0, 0, 51672, 0, 0, 0`
 
-The two captured records are byte-identical. This is a sample observation, **not** a format requirement or a reason to alias the controllers' storage.
+While the first twelve `phypara` and `ACSM` halfwords are identical across `DDR0` and `DDR1`, the two controller records are **not** byte-identical overall: `325` of the `5,170` `phypara` halfwords (per-lane RX/TX delays, period counters `0x02000a`/`0x020017`/`0x020187`) and `938` of the `4,096` ACSM halfwords differ between `DDR0` and `DDR1`. Always store and restore each controller's `0x49a4`-byte record independently.
 
 ## Inferred: practical sanity checks
 
@@ -163,5 +255,4 @@ A result with almost all-zero `phypara` or ACSM data is suspicious when compared
 
 - The detailed meaning of many message fields and PHY CSRs remains unknown; unknown bytes must still be preserved.
 - No universal numerical acceptance thresholds are established for the margin fields.
-- The captured equality of DDR0 and DDR1 does not prove that all boards or training runs produce identical records.
 - A successful training protocol exchange does not, by itself, prove long-term memory stability.

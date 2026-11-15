@@ -214,8 +214,8 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
 
 0. **Phase 0 — Pre-`DevInit` top-level PMU startup**:
    - Write `CSR[0x020090] = 1` (`ARC 0x90040120`).
-   - Test bit 0 of `byte[0x80000001]` (the reserved byte at message-block offset `0x01`, which is `0x00` on the reference profile, distinct from `MsgMisc` at `byte[0x80000000] = 0x01`): if `(byte[0x80000001] & 1) != 0`, write `0` to `CSR[0x03f01a]` (`0x9007e034`), `0` to `CSR[0x01f01a]` (`0x9003e034`), `0` to `CSR[0x02001a]` (`0x90040034`), `0` to `CSR[0x0200aa]` (`0x90040154`), and `3` to `CSR[0x02001a]` (`0x90040034`). *(By contrast, `MsgMisc[0]` = `byte[0x80000000] & 1` is `1` on the reference profile and is tested during `DevInit` Phase 3 before `Step 3.6`.)*
-   - Issue the configuration commit strobe triad (`CSR[0x020028] = 1`, `CSR[0x02f0a5] = 1`, `CSR[0x02f077] = 0`; if `(byte[0x80000001] & 1) != 0`, also pulse `CSR[0x02f052]` at `ARC 0x9005e0a4`: `1 -> delay_dfi_clks(10) -> 0`).
+   - Test bit 0 of **`MsgMisc` (`byte[0x80000001] & 1`)** (note that message-block offset `0x00` at `byte[0x80000000]` is `Reserved00 = 0x00`, whereas **offset `0x01` at `byte[0x80000001]` is `MsgMisc = 0x01`** on the reference profile, matching [05-message-block.md](05-message-block.md)). Because `(byte[0x80000001] & 1) != 0` (`MsgMisc[0] == 1`, `MTESTEnable`), this branch **is taken on the reference board**: write `0` to `CSR[0x03f01a]` (`ARC 0x9007e034`), `0` to `CSR[0x01f01a]` (`ARC 0x9003e034`), `0` to `CSR[0x02001a]` (`ARC 0x90040034`), `0` to `CSR[0x0200aa]` (`ARC 0x90040154`), and `3` to `CSR[0x02001a]` (`ARC 0x90040034`).
+   - Issue the configuration commit strobe triad (`CSR[0x020028] = 1`, `CSR[0x02f0a5] = 1`, `CSR[0x02f077] = 0`); because `(byte[0x80000001] & 1) != 0` (`MsgMisc[0] == 1`), also pulse `CSR[0x02f052]` (`ARC 0x9005e0a4`: `1 -> delay_dfi_clks(10) -> 0`).
    - **Decode hardware PHY IP version from `CSR[0x0c00ee]` (`ARC 0x901801dc`) into `byte[0x80000403]`**: Read `CSR[0x0c00ee]` (`ARC 0x901801dc`) and `byte[0x80000002]` (`0` before `PmuRevision` is written). Because `byte[0x80000002] == 0`, decode `ver = CSR[0x0c00ee] & 0x0fff` (`0x0101..0x0105` → `2..6`, `0x0110` → `7`, `0x0200` → `8`, `0x0240` → `9`, else `10`) and write the resulting version code (**`8`–`10` on K3 hardware**) to **`byte[0x80000403]` (`gp + 3`)**.
    - **Verify the 32-bit PHY signature canary (`0x00f26745`)**: Because `byte[0x80000403]` is now non-zero (`8`–`10`), the PMU **always selects the 16-bit register pair `CSR[0x09002e]` and `CSR[0x09002f]` (`ARC 0x9012005c` and `0x9012005e`, at the start of `phypara` Segment 48)**—never `CSR[0x090029]`/`0x09002a` (`ARC 0x90120052`/`0x90120054`, which is a 9-bit register that truncates `0x6745` to `0x6745 & 0x01ff = 0x0145` if `byte[0x80000403]` is left at `0`). It writes `0x6745` to `CSR[0x09002e]` and `0x00f2` to `CSR[0x09002f]`, reads them back, and compares them against the 32-bit canary comparison words `halfword[0x80000424]` (`0x6745`) and `halfword[0x80000426]` (`0x00f2`) pre-loaded by the host in DMEM (`0x80000424` is strictly the canary comparison word, not an ODT setting); if either halfword mismatches, it aborts with fatal mailbox code `0x000000ff`.
    - Write `PmuRevision = 0x2409` to message-block offset `0x80000002`.
@@ -223,7 +223,7 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
    - Read-modify-write `CSR[0x0200a2]` (`ARC 0x90040144`): `CSR[0x0200a2] = (CSR[0x0200a2] & 0xfffc) | 0x0001` (set clock-select bits `[1:0] = 1`, selecting the reference/bypass clock before PLL bring-up).
    - Call `delay_dfi_clks(4)` (one dummy read of `CSR[0x020024]`), then `delay_dfi_clks(0x1f)` (`16` RTC ticks = `40 ns`).
    - Write `CSR[0x0200f8] = 1` (`ARC 0x900401f0`).
-   - If `Quickboot == 0` (`byte[0x80000019] == 0`) and `MsgMisc[7] == 0` (`(byte[0x80000000] & 0x80) == 0`), write `CSR[0x020060] = 2` (`ARC 0x900400c0`, pre-reset `MemResetL` state).
+   - If `Quickboot == 0` (`byte[0x80000019] == 0`) and `MsgMisc[7] == 0` (`(byte[0x80000001] & 0x80) == 0`), write `CSR[0x020060] = 2` (`ARC 0x900400c0`, pre-reset `MemResetL` state).
 2. **Phase 2 — Topology counts (`0x8000040c`), clock-shift initialization (`0x80000404`), and rank bounds (`0x80000b6e..0x80000b71`)**:
    - Compute the channel and rank counts in DMEM (`gp = 0x80000400`): set `word[0x80000410] = u7` (`2` channels) and `word[0x8000040c] = u7 * u0 = 4` (`4` total ranks across ChA + ChB when `CsPresentChB != 0`, or halved to `2` when `CsPresentChB == 0`), and set `byte[0x80000a80] = 1`.
    - Read `CSR[0x0c0080]` (`ARC 0x90180100`), compute `shift = 1 & ~(CSR[0x0c0080] >> 2)`, and store `shift` to DMEM byte `0x80000404` (`gp + 4`). *(Note: this single `ldh` is the **only** access to `CSR[0x0c0080]` in the entire PMU firmware; the PMU never writes `0x0c0080`. The `2 -> 3 -> 7` clock-enable sequence on `0x0c0080` is executed exclusively by the host SPL.)*
@@ -298,16 +298,36 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
           4. Execute steps 13 and 14 of the normal branch (`0x020078 = 0`, `0x0200a2 = 0`, `0x020200 = 0`, `delay_ps_or_clks(0, 0x20)`, `0x0200f8 = 0`, `0x0200a2 = 2`).
    - **Step 3.6 (Per-rank DQ calibration loop when `DRAMFreq >= 1600`)**:
      - If `DRAMFreq < 1600` (`halfword[0x80000006] < 0x0640`), skip directly to Step 3.7.
-     - Otherwise, execute the per-rank DQ calibration sweep across the active Channel A ranks (`byte[0x80000b6e]..byte[0x80000b6f]` = `0..1`, `chan_mask = 1` = bit 0) and Channel B ranks (`byte[0x80000b70]..byte[0x80000b71]` = `2..3`, `chan_mask = 2` = bit 1):
-       1. **Broadcast setup and `CSR[0x01f002 + rank]` rank-bit clear**: Save `old_0f = CSR[0x01000f + pstate]` (`ARC 0x9002001e`) and `old_ac = CSR[0x0100ac + pstate]` (`ARC 0x90020158`). Write `CSR[0x01f0d9] = 0x1000` (`ARC 0x9003e1b2`) and `CSR[0x01f00f + pstate] = (old_0f & 0xfff8) | 0x0006` (`ARC 0x9003e01e`). For each active rank `rank` (where `rank` is the **absolute rank index `0..3`**), read `CSR[0x010002 + rank]` (`ARC 0x90020004 + 2 * rank`) and write **`CSR[0x01f002 + rank] = CSR[0x010002 + rank] & ~chan_mask` (`ARC 0x9003e004 + 2 * rank`, clearing bit 0 for Channel A ranks `0..1` and bit 1 for Channel B ranks `2..3`)**. Then write `CSR[0x01f0ac + pstate] = old_ac & 0xfffe` (`ARC 0x9003e158`), write `CSR[0x01f00f + pstate] |= 0x0005`, wait **`delay_dfi_clks(0x3000)`** (`12,288` DFI clocks = `6,144` RTC ticks = **`15.36 µs`**), and write `CSR[0x01f00f + pstate] = (CSR[0x01000f + pstate] & 0xfffa) | 0x0004`.
-       2. **Per-rank, per-lane `d0..d4` capture, `0x01<r>0ac` pulse, `d5` read, and 14%-tolerance step selection (`k = 0..5`)**:
-          - For each populated rank `r` (`0..3`) and each enabled lane `l` (`byte[0x80000b6c]..byte[0x80000b6d]` = `0..8`):
-            1. Read the five per-lane step capture registers **`d[0..4] = CSR[0x01<r><l>d0..d4]`** (`ARC 0x900201a0..0x900201a8 + r * 0x2000 + l * 0x200`).
-            2. Pulse **`CSR[0x01<r>0ac]`** (`ARC 0x90020158 + r * 0x2000`) bit 0 (`write old | 1` → `write old & ~1`).
-            3. **After** pulsing `0x01<r>0ac`, read the rank-level calibration reference **`d5 = CSR[0x01<r>0d5]`** (`ARC 0x900201aa + r * 0x2000`). Reading `d5` after the `0x01<r>0ac` pulse is why `CSR[0x0100d5]` transitions from its pre-pulse value (`0x019a`–`0x01bf` = `410`–`447`) to **`0x0041`–`0x0043` (`65`–`67`)** during `Step 3.6`, which `Step 3.7` then copies into `CSR[0x020187]`.
-            4. Compute the **14% acceptance tolerance** `tol = (d5 * 14) / 100` (`9` when `d5 = 0x0041..0x0043`). Across `k = 0..3`, evaluate the adjacent step delta `delta_k = d[k + 1] - d[k]`: select the first `k` where `d[k] > 0` (non-zero step floor) and `|delta_k - d5| <= tol`. If no step in `0..3` satisfies both conditions, use the fallback value **`k = 5`**.
-            5. *(Worked example on the reference board: for `d[0..4] = {0x0000, 0x0000, 0x0041, 0x0085, 0x00ca}` and `d5 = 0x0043 = 67` (`tol = 9`), `k = 0` has `delta_0 = 0` (`|0 - 67| > 9`), `k = 1` has `delta_1 = 0x0041` but is rejected because `d[1] == 0`, and **`k = 2`** (`d[2] = 0x0041 > 0`, `delta_2 = 0x0085 - 0x0041 = 0x0044 = 68`, `|68 - 67| = 1 <= 9`) is selected.)*
-       3. **Result write (`CSR[0x01<r>0ad]`) and restore**: Write the selected code `k` (`2` on the reference board, or `5` on fallback) to **`CSR[0x01<r>0ad]` (`ARC 0x9002015a + r * 0x2000`, byte offset `0x15a = 2 * 0xad`, serialized in `phypara` Segment 0 as `CSR[0x0100ad] = 0x0002`)**. Because `CSR[0x01<r>0ad]` is a per-rank register written inside the lane loop (`l = 0..8`), the value retained in `CSR[0x01<r>0ad]` is the `k` selected for the last enabled lane (`l = 8`). After the rank loop completes, wait `delay_dfi_clks(((CSR[0x01<r>014] & 0x01fe) + 4) * 160)` and restore `CSR[0x01f00f + pstate] = old_0f` and `CSR[0x01f0ac + pstate] = old_ac`.
+     - **Important — Per-rank only (`r = 0..3`), NO lane loop (`l = 0..8`)**: `Step 3.6` iterates **exclusively over the active ranks `r`** (`byte[0x80000b6e]..byte[0x80000b6f]` = `0..1` on Channel A, then `byte[0x80000b70]..byte[0x80000b71]` = `2..3` on Channel B) and **never loops over lanes `l = 0..8`**. The step-capture registers `CSR[0x01<r>0d0..d5]` (`ARC 0x900201a0..0x900201aa + r * 0x2000`), the latch strobe `CSR[0x01<r>0ac]` (`ARC 0x90020158 + r * 0x2000`), the step-selection result register `CSR[0x01<r>0ad]` (`ARC 0x9002015a + r * 0x2000`), and the companion calibration copy `CSR[0x01<r>0d6]` → `CSR[0x01<r>0af]` (`ARC 0x900201ac` → `0x9002015e + r * 0x2000`) are **per-rank registers located only at sub-block `0` of each rank `r`**. If a custom implementation mistakenly adds an inner lane loop `l = 0..8` at `+ l * 0x200`, `l = 0` reads `d[0..4] = {0, 0, 0x41, 0x85, 0xca}` and selects `k = 2`, and then `l = 1..8` read unimplemented zeros (`d[0..4] = {0, 0, 0, 0, 0}`) and overwrite `CSR[0x01<r>0ad]` with the fallback `k = 5`.
+     - **Three-stage `Step 3.6` register sequence**:
+       1. **Broadcast setup before the rank loop**:
+          - Select the rank-calibration gate register and bit mask from `byte[0x80000403]` (set to `8`–`10` from `CSR[0x0c00ee]` at startup): when `byte[0x80000403] >= 4`, the gate register offset is **`0x0057 + pstate`** (`CSR[0x01<r>057 + pstate]` at `ARC 0x900200ae + r * 0x2000` / broadcast `CSR[0x01f057 + pstate]` at `ARC 0x9003e0ae`) and `bit_mask = 1` (bit 0) (for `< 2`, offset `0x0014 + pstate` with `bit_mask = 2`; for `2..3`, offset `0x0056` with `bit_mask = 2`).
+          - Write `CSR[0x01f0d9] = 0x1000` (`ARC 0x9003e1b2`).
+          - Read `CSR[0x01000f + pstate]` (`ARC 0x9002001e`) and write `(CSR[0x01000f + pstate] & 0xfff8) | 0x0006` to broadcast `CSR[0x01f00f + pstate]` (`ARC 0x9003e01e`).
+          - Read `CSR[0x010057 + pstate]` (`ARC 0x900200ae`) and write `CSR[0x010057 + pstate] & ~0x0001` to broadcast **`CSR[0x01f057 + pstate]` (`ARC 0x9003e0ae`)**.
+          - Read `CSR[0x0100ac]` (`ARC 0x90020158`) and write `CSR[0x0100ac] & ~0x0001` to broadcast `CSR[0x01f0ac]` (`ARC 0x9003e158`).
+          - Write `CSR[0x01f00f + pstate] = CSR[0x01000f + pstate] | 0x0005`, wait **`delay_dfi_clks(0x3000)`** (`12,288` DFI clocks = `6,144` RTC ticks = **`15.36 µs`**), and write `CSR[0x01f00f + pstate] = (CSR[0x01000f + pstate] & ~0x0005) | 0x0004`.
+       2. **Per-rank calibration loop (`r = 0, 1` on Channel A, then `r = 2, 3` on Channel B — executed once per rank)**:
+          - Read the five rank-level step capture registers **`d[0..4] = CSR[0x01<r>0d0..d4]`** (`ARC 0x900201a0..0x900201a8 + r * 0x2000`), with sentinel `d[5] = 0x03ff`.
+          - Pulse **`CSR[0x01<r>0ac]`** (`ARC 0x90020158 + r * 0x2000`) bit 0 (`write old | 1` → `write old & ~1`).
+          - **After** pulsing `0x01<r>0ac`, read the rank-level calibration reference **`d5 = CSR[0x01<r>0d5]`** (`ARC 0x900201aa + r * 0x2000`). Reading `d5` after the `0x01<r>0ac` pulse is why `CSR[0x0100d5]` transitions from its pre-pulse value (`0x019a`–`0x01bf` = `410`–`447`) to **`0x0041`–`0x0043` (`65`–`67`)** during `Step 3.6`, which `Step 3.7` then copies into `CSR[0x020187]`.
+          - Compute the **14% acceptance tolerance** `tol = (d5 * 14) / 100` (`9` when `d5 = 0x0041..0x0043`). Across `k = 0..4` (with `d[5] = 0x03ff`), evaluate the adjacent step delta `delta_k = d[k + 1] - d[k]`: select the first `k` where `2 * d[k] >= d5` (non-zero step floor) and `|delta_k - d5| <= tol`. If no step satisfies both conditions, use the fallback value **`k = 5`**.
+          - *(Worked example on the reference board: for `d[0..4] = {0x0000, 0x0000, 0x0041, 0x0085, 0x00ca}` and `d5 = 0x0041..0x0043` (`65..67`, `tol = 9`), `k = 0` and `k = 1` fail `2 * d[k] >= d5` (`d[0] = d[1] = 0`), and **`k = 2`** (`2 * 0x0041 = 130 >= 67`, `delta_2 = 0x0085 - 0x0041 = 68`, `|68 - d5| <= 9`) is selected on all four ranks `r = 0..3`.)*
+          - Write the selected code `k` (`2` on the reference board, or `5` on fallback) to **`CSR[0x01<r>0ad]`** (`ARC 0x9002015a + r * 0x2000`, serialized in `phypara` Segment 0 as `CSR[0x0100ad] = 0x0002`).
+          - Latch the per-rank calibration result and copy `CSR[0x01<r>0d6]` to `CSR[0x01<r>0af]`:
+            1. Write `CSR[0x01<r>057 + pstate] |= 0x0001` (`ARC 0x900200ae + r * 0x2000`);
+            2. Write `CSR[0x01<r>00f + pstate] = (CSR[0x01<r>00f + pstate] & ~0x0003) | 0x0001` (`ARC 0x9002001e + r * 0x2000`);
+            3. Wait `delay_dfi_clks(((CSR[0x01<r>014 + pstate] << 1) & 0x01fe) * 160 + 160)`;
+            4. Write `CSR[0x01<r>057 + pstate] &= ~0x0001` and `CSR[0x01<r>00f + pstate] &= ~0x0001`;
+            5. Pulse `CSR[0x01<r>0ac]` bit 0 (`write old | 1` → `write old & ~1`);
+            6. Copy **`CSR[0x01<r>0d6]`** (`ARC 0x900201ac + r * 0x2000`) to **`CSR[0x01<r>0af]`** (`ARC 0x9002015e + r * 0x2000`, serialized in `phypara` Segment 0 right after `0x0100ad`).
+       3. **Broadcast restore after the rank loop**:
+          - Write `CSR[0x01f057 + pstate] = CSR[0x010057 + pstate] | 0x0001` (`ARC 0x9003e0ae`);
+          - Write `CSR[0x01f00f + pstate] = (CSR[0x01000f + pstate] & ~0x0003) | 0x0001` (`ARC 0x9003e01e`);
+          - Wait `delay_dfi_clks(((CSR[0x010014 + pstate] << 1) & 0x01fe) * 160 + 160)`;
+          - Write `CSR[0x01f057 + pstate] = CSR[0x010057 + pstate] & ~0x0001`;
+          - Write `CSR[0x01f00f + pstate] = CSR[0x01000f + pstate] & ~0x0001`.
+          - *(Note: the per-rank channel-bit clear on `CSR[0x01f002 + rank]` at `ARC 0x9003e004 + 2 * rank`—clearing bit 0 for Channel A ranks `0..1` and bit 1 for Channel B ranks `2..3`—and its matching restore `CSR[0x01f002 + rank] = CSR[0x010002 + rank] | chan_mask` are performed by the rank-mux wrapper used around per-rank command/training sweeps.)*
    - **Step 3.7 (Master clock-period calibration)**:
      - Execute the **master clock-period calibration** sequence detailed above (3-step `0x0200e5`/`0x0200e3` strobe with bit 10 falling edge → `CSR[0x02000a]`, `CSR[0x020017]`, `CSR[0x020012] = 0x7353`, `CSR[0x020186] = 0x0073`, `CSR[0x020187] = 0x0041`, and per-rank `CSR[0x01<r>0d9] = 0x009c`).
 4. **Phase 6 — ACSM clock divider init, one-shot NOP flush, `MemResetL` release (`CSR[0x020060]`), and initial LPDDR5 MRW + ZQ `MPC` bursts**:
@@ -319,12 +339,12 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
      - Write `CSR[0x02002a] = 1` (`ARC 0x90040054`).
    - **Step 6.2 (`MemResetL` release, LPDDR5 mode-register initialization burst, and ZQ calibration `MPC` burst)**:
      - Assemble the per-rank mode-register table in DMEM from the **message block** (`0x8000005a`–`0x800000cd`: `MR1`..`MR41` for `A0`, `A1`, `B0`, `B1`).
-     - When `Quickboot == 0` and `MsgMisc[7] == 0`, execute the DRAM reset-release and mode-register initialization flow:
+     - When `Quickboot == 0` (`byte[0x80000019] == 0`) and `MsgMisc[7] == 0` (`(byte[0x80000001] & 0x80) == 0`), execute the DRAM reset-release and mode-register initialization flow:
        1. Write `CSR[0x020041 + pstate] = 0` (`ARC 0x90040082`) and `CSR[0x02002a] = 1` (`ARC 0x90040054`);
-       2. Wait for `tINIT3`: test bit 1 of `byte[0x80000001]` (`(byte[0x80000001] & 2) != 0`), calling **`delay_ps_or_clks(2000000, 0)`** (`2.0 µs` = `801` RTC ticks) if set, or **`delay_ps_or_clks(200000000, 0)`** (`200.0 µs` = `80,001` RTC ticks) if clear (`0` on the reference profile);
-       3. Release `MemResetL`: write **`CSR[0x020060] = 3`** (`ARC 0x900400c0`), wait `tINIT4`/`tINIT5` via **`delay_ps_or_clks(2000000, 0)`** (`2.0 µs` if `(byte[0x80000001] & 2) != 0`) or **`delay_ps_or_clks(2000000000, 0)`** (`2,000,000,000 ps` = **`2.0 ms`** = `800,001` RTC ticks if clear), and then test **`Misc[0]` (`byte[0x8000000d] & 1`)** in the message block: when `Misc[0] == 1`, write **`CSR[0x020060] = 1`** (`1` is the final value captured in `phypara` when `Misc[0] == 1`, or `3` when `Misc[0] == 0`);
+       2. Wait for `tINIT3`: test bit 1 of **`MsgMisc` (`byte[0x80000001] & 2`)**, calling **`delay_ps_or_clks(2000000, 0)`** (`2.0 µs` = `801` RTC ticks) if set, or **`delay_ps_or_clks(200000000, 0)`** (`200.0 µs` = `80,001` RTC ticks) if clear. Because `MsgMisc = 0x01` on the reference profile (`0x01 & 2 == 0`), the fast-`tINIT` branch is **not** taken and the reference run waits the full **`200.0 µs`**;
+       3. Release `MemResetL`: write **`CSR[0x020060] = 3`** (`ARC 0x900400c0`), wait `tINIT4`/`tINIT5` via **`delay_ps_or_clks(2000000, 0)`** (`2.0 µs` if `(byte[0x80000001] & 2) != 0`) or **`delay_ps_or_clks(2000000000, 0)`** (`2,000,000,000 ps` = **`2.0 ms`** = `800,001` RTC ticks when `(byte[0x80000001] & 2) == 0`, as on the reference profile), and then test **`Misc[0]` (`byte[0x8000000d] & 1`)** in the message block: when `Misc[0] == 1`, write **`CSR[0x020060] = 1`** (`1` is the final value captured in `phypara` when `Misc[0] == 1`, or `3` when `Misc[0] == 0`);
        4. Prepare the ACSM routing registers in exact order (`CSR[0x03f084] = 0` at `ARC 0x9007e108`, `CSR[0x01f00a] = 0` at `ARC 0x9003e014`, `CSR[0x02002a] = 1` at `ARC 0x90040054`, `CSR[0x020041 + pstate] = 1` at `ARC 0x90040082`), reset the ACSM cursor (`0x80000458 = 0`), queue the entire initial LPDDR5 mode-register write burst (`MR19`, `MR18`, `MR1`, `MR2`, `MR3`, `MR10`, `MR11`, `MR17`, `MR12`, `MR14`, `MR15`, `MR16`, `MR20`, `MR22`, `MR24`, `MR37`, `MR40`, `MR41`, each followed by a `2`-unit `0x2b00` NOP delay) into ACSM SRAM (`0x41000` / `ARC 0x90082000`), and trigger the **ACSM command sequencer once in one-shot mode** (`CSR[0x020027] = 0`, `delay_dfi_clks(6)`, `CSR[0x020023 + pstate] = (cursor >> 2) - 1`, `CSR[0x020020] = 1` → poll `while (CSR[0x020021] == 0)` → `CSR[0x020020] = 0`);
-       5. Immediately after the MRW burst, reset the ACSM cursor (`0x80000458 = 0`), queue the **LPDDR5 ZQ calibration (`MPC`) burst** (a `5`-unit NOP, command `0x25` / `0x26` with `OP = 0x86` and `cs = 0x0f` / `0`, and trailing `16`-unit and `10`-unit NOPs, or command `0x19` with `OP = 0x86` followed by `delay_ps_or_clks(30000, 0x1e)` = `1.20 µs`), execute it via a one-shot ACSM run, restore `CSR[0x020041 + pstate] = 0` and `CSR[0x01f00a] = 0`, and pulse the channel-commit strobe `CSR[0x02f0a0]` (`1 -> delay_dfi_clks(0x20) -> 0`).
+       5. Immediately after the MRW burst, reset the ACSM cursor (`0x80000458 = 0`), queue the **LPDDR5 ZQ calibration (`MPC`) burst** (on the reference board where `byte[0x80000a80] == 1` and `(byte[0x80000001] & 8) == 0`, this is the 48-halfword Variant 1 sequence: a `5`-unit NOP, `cmd = 0x25` + `cmd = 0x26` with `OP = 0x86` and `cs = 0x0f` / `0`, two `16`-unit NOPs, a `1`-unit NOP, and a `10`-unit NOP; see exact halfwords below), execute it via a one-shot ACSM run, restore `CSR[0x020041 + pstate] = 0` and `CSR[0x01f00a] = 0`, and pulse the channel-commit strobe `CSR[0x02f0a0]` (`1 -> delay_dfi_clks(0x20) -> 0`).
    - **Step 6.3 (Post-`DevInit` lane state and `CSR[0x0000a4]`)**:
      - Program the active channel/rank masks (`CSR[0x02007a]` and `CSR[0x02007e]`), `CSR[0x020042] = byte[0x80000b68] | 0x0100` (`ARC 0x90040084 = 0x0108`), `CSR[0x020044] = (DfiFreqRatio == 2) ? 3 : 2` (`ARC 0x90040088 = 2` during `DevInit`, later updated to `byte[0x80000b68] | 0x0100 = 0x0108` during post-`DevInit` stage setup), pulse `CSR[0x02f0a0]` (`1 -> delay_dfi_clks(0x20) -> 0`), and restore per-rank/lane timing registers:
        - Restore `CSR[0x01<r>0a3]` (`0x0b33`) from DMEM `0x80000430`–`0x80000437`.
@@ -380,8 +400,58 @@ All DRAM mode-register writes (`MRW`), multi-purpose commands (`MPC`), and inter
        hw0_mrw1(cs_mask, MA) = ((cs_mask & 3) << 14) | ((MA & 0x7f) << 7) | 0x0058
        hw0_mrw2(cs_mask, OP) = ((cs_mask & 3) << 14) | ((OP & 0x7f) << 7) | ((OP & 0x80) >> 1) | 0x0008
        ```
-   - **Inter-command NOP / cycle-delay entry**:
-     - Following each command pair, the NOP delay helper writes a 4-halfword delay entry where `hw[0] = hw[1] = hw[2] = 0x0000` and `hw[3] = ((cycles & 7) << 12) | 0x0b00` (with a fixed `2`-unit inter-MRW spacing `0x2b00`, where the raw cycle count is divided by the 16-bit divisor at DMEM `0x8000045a = 4`).
+   - **8-halfword NOP / cycle-delay pair (`hw[0..7]`, 8-bit repeat count split across `hw[3]` and `hw[7]`)**:
+     - Every NOP delay entry emitted into ACSM SRAM occupies an **8-halfword pair (`hw[0..7]`, 16 bytes)** and encodes an 8-bit repeat count `r = ceil(cycles / divisor) - 1` (`0..255`), where `divisor = 1` when `raw_mode == 1` (used for the explicit `4`-, `5`-, `10`-, `16`-, and `1`-unit NOPs in `Step 6.1` and `Step 6.2.5`) or `divisor = 2 * halfword[0x8000045a] = 8` when `raw_mode == 0` (used for the `cycles = 17` inter-MRW spacing in `Step 6.2.4`, where `ceil(17 / 8) - 1 = 2`).
+     - When `r == 0` (`1` unit total): all 8 halfwords `hw[0..7]` are `0x0000`.
+     - When `1 <= r <= 255`: the **low 3 bits `r[2:0]`** are placed in **`hw[3]` bits `[14:12]`** with opcode `0x0b00`, and the **upper 5 bits `r[7:3]`** are placed in **`hw[7]` bits `[14:10]`** (`(r & 0xf8) << 7`):
+       ```text
+       hw[0..2] = 0x0000
+       hw[3]    = ((r & 0x07) << 12) | 0x0b00
+       hw[4..6] = 0x0000
+       hw[7]    = (r & 0xf8) << 7
+       ```
+       *(If `r >= 256`, the helper emits maximal 255-unit pairs `hw[3] = 0x7b00, hw[7] = 0x7c00` in a loop, subtracting `255` each iteration.)*
+     - Concrete 8-halfword NOP pairs emitted during `Step 6.1` and `Step 6.2`:
+
+       | NOP call site | `cycles` | `raw_mode` (`divisor`) | Repeat count `r` | `hw[3]` | `hw[7]` | Complete 8-halfword pair (`hw[0..7]`) |
+       |---|---:|---:|---:|---:|---:|---|
+       | `1`-unit NOP (`Step 6.2.5`) | `1` | `1` (`1`) | `0` (`0x00`) | `0x0000` | `0x0000` | `0000 0000 0000 0000 0000 0000 0000 0000` |
+       | Inter-MRW spacing (`Step 6.2.4`) | `17` | `0` (`8`) | `2` (`0x02`) | `0x2b00` | `0x0000` | `0000 0000 0000 2b00 0000 0000 0000 0000` |
+       | `4`-unit NOP (`Step 6.1` flush) | `4` | `1` (`1`) | `3` (`0x03`) | `0x3b00` | `0x0000` | `0000 0000 0000 3b00 0000 0000 0000 0000` |
+       | `5`-unit NOP (`Step 6.2.5` pre-MPC) | `5` | `1` (`1`) | `4` (`0x04`) | `0x4b00` | `0x0000` | `0000 0000 0000 4b00 0000 0000 0000 0000` |
+       | `10`-unit NOP (`Step 6.2.5` post-MPC) | `10` | `1` (`1`) | `9` (`0x09`) | `0x1b00` | `0x0400` | `0000 0000 0000 1b00 0000 0000 0000 0400` |
+       | `16`-unit NOP (`Step 6.2.5` post-MPC) | `16` | `1` (`1`) | `15` (`0x0f`) | `0x7b00` | `0x0400` | `0000 0000 0000 7b00 0000 0000 0000 0400` |
+
+   - **LPDDR5 ZQ Calibration (`MPC`) burst encoding in `Step 6.2.5`**:
+     - **Variant selection condition**: `Step 6.2.5` evaluates `mode = (byte[0x80000a80] != 0) && ((byte[0x80000001] & 8) == 0)`. Because `byte[0x80000a80] == 1` (initialized in Phase 2) and `MsgMisc = byte[0x80000001] = 0x01` (`MsgMisc[3] == 0`), **the reference board always executes Variant 1 (`mode = 1`)**.
+     - **How `cs_mask = 0x0f` fits the 2-bit chip-select field**: The ACSM command encoder masks `cs_mask` with **`cs_mask & 3`** when packing bits `[15:14]` of `hw[0]` (`0x0f & 3 = 3` → `0xc000`), and tests bit 1 of `cs_mask` (`(cs_mask & 2) != 0`) to set bit 4 (`0x0010`) of `hw[3]`.
+     - **Variant 1 (`mode = 1`, active on the reference board — 48 halfwords = `6 × 8` halfwords, `CSR[0x020023] = (48 >> 2) - 1 = 11`)**:
+       - Emits a `5`-unit NOP, followed by an 8-halfword ZQ `MPC` command pair (`cmd = 0x25` with `OP = 0x86`, `cs_mask = 0x0f` in `hw[0..3]`, and `cmd = 0x26` with `OP = 0x86`, `cs_mask = 0` in `hw[4..7]`), followed by two `16`-unit NOPs, a `1`-unit NOP, and a `10`-unit NOP:
+         ```text
+         hw0_cmd25(cs_mask, OP) = ((cs_mask & 3) << 14) | ((((OP >> 1) & 0x40) | 0x30) << 7) | (((OP >> 1) & 0x40) | 0x30)
+                                = 0xc000 | (0x70 << 7) | 0x0070 = 0xf870   (for cs_mask = 0x0f, OP = 0x86)
+         hw3_cmd25(cs_mask)     = (cs_mask & 2) ? 0x0010 : 0x0000 = 0x0010
+         hw4_cmd26(cs_mask, OP) = ((cs_mask & 3) << 14) | ((OP & 0x7f) << 7) | (OP & 0x7f)
+                                = 0x0000 | (0x06 << 7) | 0x0006 = 0x0306   (for cs_mask = 0, OP = 0x86)
+         ```
+       - Complete 48-halfword ACSM SRAM image written at `0x41000` (`ARC 0x90082000`) for Variant 1:
+
+         | Halfword offset (`0x41000 + off`) | Raw halfwords (`hw[0..7]`) | Decoded ZQ `MPC` burst instruction (`mode = 1`) |
+         |---:|---|---|
+         | `0..7` | `0000 0000 0000 4b00 0000 0000 0000 0000` | Pre-MPC `5`-unit NOP delay (`r = 4`) |
+         | `8..15` | `f870 0000 0000 0010 0306 0000 0000 0000` | LPDDR5 `MPC(ZQCAL LATCH)` (`OP = 0x86`): `cmd = 0x25` (`cs = 0x0f & 3 = 3`, `hw[0] = 0xf870`, `hw[3] = 0x0010`) + `cmd = 0x26` (`cs = 0`, `hw[4] = 0x0306`) |
+         | `16..23` | `0000 0000 0000 7b00 0000 0000 0000 0400` | Post-MPC `16`-unit NOP delay (`r = 15 = 0x0f`) |
+         | `24..31` | `0000 0000 0000 7b00 0000 0000 0000 0400` | Post-MPC `16`-unit NOP delay (`r = 15 = 0x0f`) |
+         | `32..39` | `0000 0000 0000 0000 0000 0000 0000 0000` | Post-MPC `1`-unit NOP delay (`r = 0`) |
+         | `40..47` | `0000 0000 0000 1b00 0000 0000 0000 0400` | Post-MPC `10`-unit NOP delay (`r = 9 = 0x09`) |
+
+     - **Variant 0 (`mode = 0`, used only when `byte[0x80000a80] == 0` or `MsgMisc[3] == 1`)**:
+       - Emits a single 8-halfword packet (`cmd = 0x19` with `OP = 0x86`, `cs_mask = 3`):
+         ```text
+         hw[0] = ((cs_mask & 3) << 14) | ((OP & 0x7f) << 7) | ((OP & 0x80) >> 1) | 0x0030 = 0xc370
+         hw[3] = (cs_mask & 2) ? 0x0010 : 0x0000 = 0x0010
+         ```
+         (`c370 0000 0000 0010 0000 0000 0000 0000`, `CSR[0x020023] = 1`), triggers a one-shot ACSM run, and waits `delay_ps_or_clks(30000, 0x1e)` (`1.20 µs`).
    - **Verification against the reference ACSM capture (`training_envelope.bin`)**:
      - Decoding the first non-zero halfwords of the reference 6400 MT/s ACSM snapshot reproduces the exact initial message-block mode-register values:
 
@@ -405,7 +475,7 @@ All DRAM mode-register writes (`MRW`), multi-purpose commands (`MPC`), and inter
 The following CSRs are written by `DevInit` to sequence hardware state machines, resets, and the ACSM sequencer, and are **not** part of the 5,170-entry `phypara` table:
 
 - **Group `0x00`**: `0x0000a4 = 1` (`ARC 0x90000148`; never written `0`);
-- **Group `0x01` broadcast (`0x01fxxx`)**: `0x01f002`–`0x01f005` (`0x9003e004`–`0x9003e00a`, `Step 3.6` per-rank channel-bit clear), `0x01f00a` (`0x9003e014`), `0x01f00f` (`0x9003e01e`), `0x01f01a` (`0x9003e034`), `0x01f0ac` (`0x9003e158`), and `0x01f0d9` (`0x9003e1b2`). *(Note: the `Step 3.6` result register `CSR[0x01<r>0ad]` at `ARC 0x9002015a + r * 0x2000` **is** part of `phypara` Segment 0, where `CSR[0x0100ad] = 0x0002`.)*
+- **Group `0x01` broadcast (`0x01fxxx`)**: `0x01f002`–`0x01f005` (`0x9003e004`–`0x9003e00a`, per-rank channel-bit clear/restore), `0x01f00a` (`0x9003e014`), `0x01f00f` (`0x9003e01e`), `0x01f01a` (`0x9003e034`), `0x01f057` (`0x9003e0ae`, `Step 3.6` rank-calibration gate bit 0), `0x01f0ac` (`0x9003e158`), and `0x01f0d9` (`0x9003e1b2`). *(Note: the `Step 3.6` result registers `CSR[0x01<r>0ad]` at `ARC 0x9002015a + r * 0x2000` and `CSR[0x01<r>0af]` at `ARC 0x9002015e + r * 0x2000` **are** part of `phypara` Segment 0, where `CSR[0x0100ad] = 0x0002`.)*
 - **Group `0x02` and `0x03` control/reset/ACSM**: `0x02001a`, `0x020020`–`0x020023`, `0x020027` (`= 0`, never `0x8000`), `0x020028`, `0x02002a`, `0x020031` (continuous-loop ACSM enable), `0x020041`, `0x020042`, `0x020044`, `0x020049` (`= 0x01f0`, never `1`), `0x020053`, `0x020060` (`MemResetL`), `0x020061` (`1 -> 0`, never `2`), `0x02006e` (`= 1` via `0x800004cc`), `0x020070`–`0x020073`, `0x020078`, `0x02007a`, `0x02007e`, `0x02008b`, `0x020090` (`= 1`), `0x0200a2`, `0x0200aa`, `0x0200c3`, `0x0200e0`–`0x0200e3`, `0x0200e5`, `0x0200f8`, `0x02011c` (`0x90040238` terminal status pulse), `0x020200`, `0x020303`, `0x02030d`, `0x020310`, `0x020311`, `0x020320`, `0x02f052`, `0x02f077`, `0x02f0a0` (`0x9005e140`: `1 -> delay(0x20) -> 0`), `0x02f0a5`, `0x03f01a` (`0x9007e034`), and `0x03f084` (`0x9007e108`).
 
 By contrast, in the `0x0200c0`–`0x0200cf` range, `CSR[0x0200c3]` (`0x0001`), `CSR[0x0200c6]` (`0x0010`), `CSR[0x0200cd]` (`0x0001`), and `CSR[0x0200cf]` (`0x001f`) hold hardware power-on reset values that are never read by the PMU (`0x0200c5`, `0x0200c7`, `0x0200ca`, and `0x0200cc` are unimplemented and read as `0`), `CSR[0x0200c9]` (`0` references) is never polled by the PMU, and `CSR[0x020314]` / `CSR[0x020315]` (`ARC 0x90040628` / `0x9004062a`) are read-only hardware calibration output registers (`0` writes in host or PMU code) read by `Step 6.1`. In groups `0x0c` and `0x0d`, **the PMU never writes to `CSR[0x0c0080]` (`ARC 0x90180100`, read once in Phase 2), `CSR[0x0c0086]` (`ARC 0x9018010c`, 0 references in PMU firmware), or `CSR[0x0c00ee]` (`ARC 0x901801dc`, read once at startup to populate `byte[0x80000403] = 8..10`)**; the `2 -> 3 -> 7` transitions on `0x0c0080` are performed exclusively by the host SPL, and `0x0c0086` reflects hardware/host status. Neither `CSR[0x0d0036]` nor P-state SRAM (`0x0a0000`) is accessed during `DevInit`.

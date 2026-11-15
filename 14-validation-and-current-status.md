@@ -126,24 +126,24 @@ Comparing multiple independent cold-boot full-training runs on the reference 640
 When validating an independent trainer on a board without comparing against a prior `phypara` dump, verify all five standalone invariants:
 
 1. **Execution duration**: Full training (`SequenceCtrl = 0x125f`) completes in the multi-second range (~4.4–5.8 s), never in a few milliseconds (`5–41 ms` indicates an early abort or skipped DQ sweeps).
-2. **`DevInit` completion markers**: `CSR[0x020011]` (`ARC 0x90040022`) is masked from its `0x006f` pre-training value to `0x000f` (with `0x006f` saved at DMEM `0x8000042a`), `CSR[0x02000a]` and `CSR[0x020017]` hold measured clock periods (`~0x0190` / `0x0100` at 6400 MT/s), `CSR[0x020012]`/`0x020186`/`0x020187` hold non-zero frequency-bucket codes (`0x3221`/`0x4332` and `0x0201`/`0x0302`), and `CSR[0x0c0086]` transitions to `3` after `DevInit` (or `2` after full training). Note that `CSR[0x01<r>0a3] == 0x0b33` is written by the host pre-training table *before* the PMU starts and therefore does not by itself prove `DevInit` executed.
+2. **`DevInit` completion markers**: `CSR[0x020011]` (`ARC 0x90040022`) is masked from its `0x006f` pre-training value to `0x000f` (with `0x006f` saved at DMEM `0x8000042a`), `CSR[0x02000a]` holds the latched CA clock period (`0x0082`–`0x0086` at 6400 MT/s, updated away from its `0x0040` pre-training seed after the bit 10 falling-edge strobe on `CSR[0x0200e3]`, while `CSR[0x020017]` remains `0x0040`), `CSR[0x020012]`/`0x020186`/`0x020187` hold `0x7353`, `0x0073`, and `0x0041` (updated from `0xa1a1`, `0x00a1`, and `0x0040`), `CSR[0x01<r>0d9]` holds `0x009c` (`156`) across all active ranks, and `CSR[0x0c0086]` transitions to `3` after `DevInit` (or `2` after full training). Note that `CSR[0x01<r>0a3] == 0x0b33` is written by the host pre-training table *before* the PMU starts and therefore does not by itself prove `DevInit` executed.
 3. **Trained read-eye centers**: Every active lane (`4 ranks × 9 lanes`) has `CSR[0x01<r><l>4e]` and `0x4f` updated away from the `0x0035` pre-training seed (with `0x50`/`0x51` remaining `0x0035` when `DisableTrainingLoop[1] = 0`).
 4. **2D eye opening** (when contour streaming is enabled): Horizontal width is in the **70–124 tap** range (median ~102 taps) and vertical height is **21–32 voltage levels**.
-5. **Self-repeatability**: Two consecutive cold-boot training runs of the new firmware agree within **`<= ±3` taps** across all 36 lanes (excluding the 7 volatile CSRs below).
+5. **Self-repeatability**: Two consecutive cold-boot training runs of the new firmware agree within **`<= ±3` taps** across all 36 lanes (excluding the volatile CSRs below).
 
 ### Volatile / hardware-counter CSRs to exclude from bit-exact `phypara` diffs
 
-Seven CSR indices inside the 5,170-entry `phypara` dump reflect live hardware period counters or boundary-sensitive calibration buckets and therefore vary legitimately between consecutive runs:
+Inside the 5,170-entry `phypara` dump, the live period-counter register and hardware sequencer/status registers can vary slightly across runs or between `DevInit`-only (`SequenceCtrl = 0x0001`) and full-training (`0x125f`) captures:
 
-| CSR index | ARC address | Typical variation across runs | Reason |
+| CSR index | ARC address | Reference pre → post (`0x125f` / `0x0001`) | Reason |
 |---:|---:|---|---|
-| `0x02000a` | `0x90040014` | `0x018f`–`0x0190` (399–400) | Live CA period counter (`CSR[0x0300bf] & 0x01ff`) sampled during `DevInit` (`±1` tick jitter) |
-| `0x020012` | `0x90040024` | `0x3221` vs. `0x4332` | `2 * T_ca` (`798` vs. `800`) straddles the `799` (`0x031f`) threshold bucket |
-| `0x020186` | `0x9004030c` | `0x0201` vs. `0x0302` | `fine`/`coarse` fields derived from the same `799` boundary as `0x020012` |
-| `0x020187` | `0x9004030e` | `0x0201` vs. `0x0302` | Companion `fine`/`coarse` register paired with `0x020186` |
-| `0x09080b` | `0x90121016` | `0x0015` vs. `0x00ff` | ACSM/sequencer runtime state |
-| `0x09080c` | `0x90121018` | `0x002d` vs. `0x0065` | ACSM/sequencer runtime state |
-| `0x0c0086` | `0x9018010c` | `0x0002` vs. `0x0003` | Sticky PHY/microcontroller status bits (`1` during PMU execution, `3` after `DevInit`, `2` after full training) |
+| `0x02000a` | `0x90040014` | `0x0040` → `0x0082` (`130`) / `0x0086` (`134`) | Live CA period counter (`CSR[0x0300bf] & 0x01ff`) latched by the `CSR[0x0200e3]` bit 10 falling edge during `DevInit` (`±1..4` tick variation) |
+| `0x020012` | `0x90040024` | `0xa1a1` → `0x7353` | Deterministic frequency bucket computed from `DRAMFreq` (`6400`) and `DfiFreqRatio` (`4`) |
+| `0x020186` | `0x9004030c` | `0x00a1` → `0x0073` | Secondary frequency bucket `(bucket3 << 4) \| fine_hi` computed from `DRAMFreq` and `DfiFreqRatio` |
+| `0x020187` | `0x9004030e` | `0x0040` → `0x0041` | Copied unmasked from rank-0 `CSR[0x0100d5]` (`ARC 0x900201aa`) during `DevInit` |
+| `0x09080b` | `0x90121016` | `0x002f` → `0x000f` (or `0x0015`/`0x00ff`) | ACSM/sequencer hardware state |
+| `0x09080c` | `0x90121018` | `0x006f` → `0x000f` (or `0x002d`/`0x0065`) | ACSM/sequencer hardware state |
+| `0x0c0086` | `0x9018010c` | `0x0000` → `0x0002` (`0x125f`) / `0x0003` (`0x0001`) | Sticky PHY/microcontroller status bits (`1` during PMU execution, `3` after `DevInit`, `2` after full training) |
 
 ### Diagnostic failure signatures
 
@@ -157,7 +157,7 @@ When bringing up new PMU firmware or host table overrides, use the following sym
 | Late host message-block override (`SequenceCtrl`, `HdtCtrl`, `Train2DMisc`) has no effect | Normal (~5.6 s) | Host wrote `DPHY_BASE + 4 * 0x58000` *after* the pre-training phase closed (immediately before `pwrctl` bit 11); hardware discards those writes |
 | Mailbox streaming takes 5–7 minutes with `Train2DMisc[0] = 1` | **>300 s** | Host receiver printed a fixed 15/16-word buffer per frame over 115200 bps UART instead of printing only `len + 1` words |
 | `CSR[0x01<r><l>4e]` stays at `0x0035` after training | Variable | `RdDQS` (`SequenceCtrl[3]`) did not run, or `DisableTrainingLoop[1]` (`0x80000102 & 2`) was inadvertently set, averaging `0x4e` with `0x50` (`0x0035`) |
-| `CSR[0x02000a]`/`0x020017`/`0x020012` stay at `0x0000` or `CSR[0x020011]` stays at `0x006f` | ~15 ms+ | Period counter enable wrote `1` to `CSR[0x0200e3]` instead of setting bits `[11:10]` (`|= 0x0c00`) and clearing `CSR[0x0200e5]` bits `[4:0]` (`&= 0xffe0`), or missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the `0x020011` `& 0xff9f` update or counter reads |
+| `CSR[0x0300bf]` and `CSR[0x0100e0]` read `0x0240` (`CSR[0x02000a]` stays at `0x0040`) or `CSR[0x020011]` stays at `0x006f` | ~15 ms+ | Period-counter strobe omitted the **falling edge on bit 10 of `CSR[0x0200e3]`** (`0x0800 -> 0x0c00 -> delay(10) -> 0x0800` after `CSR[0x0200e5] &= ~0x001f`), leaving `0x0300bf & 0x01ff` at the unlatched pre-training value `0x0040` instead of `0x0082`–`0x0086`, or missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the strobe |
 
 ## Safe bench observation policy
 

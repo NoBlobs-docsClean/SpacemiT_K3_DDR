@@ -60,14 +60,14 @@ The message block supports `Pstate` selection and a 15-P-state DMA mode (`Pstate
 
 ## Unresolved hardware questions
 
-### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) command encoding and MRW/MRR/MPC issuance
+### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) specialized training patterns and `MRR` readback path
 
-The Address/Command State Machine (ACSM) SRAM occupies 4,096 16-bit halfwords (`0x2000` bytes) at host CSR index `0x41000`–`0x41fff` (`ARC 0x90082000`–`0x90083ffe`):
+The Address/Command State Machine (ACSM) SRAM (`0x41000`–`0x41fff`, `ARC 0x90082000`–`0x90083ffe`), its group `0x02` sequencer control registers (`CSR[0x020020]`–`0x020027`, `ARC 0x90040040`–`0x9004004e`), and the 4-halfword instruction format used to issue LPDDR5 mode-register writes (`MRW-1` / `MRW-2`, such as `0xc9d8`/`0xc808` for `MR19 = 0x10`) and NOP delays (`0x2b00`) are now documented in [07-training-behavior.md](07-training-behavior.md).
 
-- Before PMU execution, ACSM SRAM contains uninitialized power-on SRAM data (neither the host pre-training table nor the post-training table writes to `0x41000`–`0x41fff`).
-- After full training (`SequenceCtrl = 0x125f`), 1,845 of the 4,096 halfwords hold non-zero values (starting at offset `8` with `0xc9d8` = `51672`), which the host collects and saves into the `DDRT` quickboot envelope.
-- Inside the PMU firmware, ACSM addresses are computed dynamically from base registers and table offsets rather than appearing as literal `0x90082xxx` or `0x40020`/`0x400fd`/`0x40100` immediate constants.
-- **Open gap for independent PMU firmware**: While quickboot simply restores the saved 4,096-halfword ACSM image wholesale, an independent full-training PMU firmware that executes active DRAM mode-register writes (`MRW`), mode-register reads (`MRR`), or multi-purpose commands (`MPC`) through the ACSM sequencer requires the bit-level encoding of ACSM command halfwords and the exact sequencer trigger/poll registers in group `0x04` (`0x40000`–`0x40fff`).
+Remaining open details within the ACSM subsystem include:
+
+- the exact CSR capture registers from which the PMU reads back data returned by an LPDDR5 mode-register read (`MRR`); and
+- the bit-level encoding of specialized non-`MRW` training pattern instructions (such as continuous read/write burst loops loaded into higher ACSM instruction slots during `RdDQS`, `WrDq`, and `DRAM DCA`).
 
 ### 9. Bit-level definitions of internal PHY CSRs and physical lane-to-DQ mapping
 

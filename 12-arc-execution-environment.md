@@ -69,11 +69,12 @@ Within `0x80000400`–`0x800004ff` (relative to `gp = 0x80000400`), the PMU firm
 
 | ARC DMEM Address | Width | Role during PMU execution |
 |---:|---|---|
+| `0x80000404` | 8-bit | Short-delay clock shift (`1 & ~(CSR[0x0c0080] >> 2)`: `1` when `0x0c0080 == 3`, `0` when `0x0c0080 == 7`) used by `delay(n)` to compute `scaled = (n + 1) >> shift` |
 | `0x8000042a` | 16-bit | Saved pre-training value of `CSR[0x020011]` (`0x006f`) before masking bits `[6:5]` to `0x000f` |
 | `0x8000042c` | 16-bit | Stage execution progress bitmask (`\|= 1`, `\|= 2`, `\|= 4`, `\|= 8`) |
 | `0x80000430`–`0x80000437` | 4 × 16-bit | Saved per-rank values of `CSR[0x01<r>0a3]` (`0x0b33` for `r = 0..3`) |
 | `0x80000438`, `0x8000043a` | 16-bit | Saved state words during `DevInit` |
-| `0x80000458`, `0x8000045a` | 16-bit | Scaled timer delay state and divisor (`0x8000045a` is the delay loop divisor; a 32-bit store to `0x80000458` clobbers `0x8000045a` and breaks all hardware delays) |
+| `0x80000458`, `0x8000045a`, `0x8000045e` | 16-bit | ACSM halfword write cursor (`0x80000458` and `0x8000045e`) and NOP cycle-count divisor (`0x8000045a = 4`; a 32-bit store to `0x80000458` clobbers `0x8000045a` and breaks ACSM delay loops) |
 | `0x8000045b`–`0x8000046c` | 8/16-bit | Per-channel / per-rank mode and configuration scratch bytes/halfwords |
 | `0x8000047c`, `0x8000047e` | 16-bit | Saved state words during `DevInit` |
 | `0x800004a8`, `0x800004b0`, `0x800004bc`, `0x800004cc`, `0x800004de`, `0x800004f4` | 16-bit | Sub-table descriptors and stage scratch words |

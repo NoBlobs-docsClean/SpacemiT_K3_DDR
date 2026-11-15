@@ -88,7 +88,7 @@ In this document, **must** denotes a mandatory hardware or ABI requirement verif
   4. Writing `1` to `0x90180066` (assert doorbell);
   5. Polling `0x90180008` bit 0 until `1` (host acknowledged).
 - **Do not clear `0x90180066` to `0` after step 5**: `0x90180066 = 0` belongs at step 2 of the next word transfer. Clearing `0x90180066` to `0` immediately after step 5 leaves `0x90180008` bit 0 at `1` while the doorbell is `0`, which can desynchronize the next transfer.
-- Sending a streaming message (`0x08`) requires first sending command `0x08` with its handshake, then the count word `len`, then the 32-bit header `(id << 16) | len`, and finally each of the `len` 32-bit payload words as `(low_16 -> 0x90180064, high_16 -> 0x90180068)` with the full 5-step doorbell/ACK handshake per word.
+- Sending a streaming message (`0x08`) requires first sending the 16-bit command `0x08` with its 5-step handshake, followed immediately by **`len + 1` 32-bit words** (`word 0` = header `(id << 16) | len`, `words 1..len` = `len` payload words), each written as `(low_16 -> 0x90180064, high_16 -> 0x90180068)` with one 5-step doorbell/ACK handshake per 32-bit word. Do **not** send a separate 16-bit count word before the 32-bit header: the host reads `j = len` directly from the low 16 bits (`0xd0032`) of the already-loaded header before entering its `j + 1` word ACK loop.
 
 ## BR-10 — Verification invariants before hardware deployment
 

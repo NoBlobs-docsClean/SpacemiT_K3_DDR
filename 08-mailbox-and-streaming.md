@@ -53,7 +53,7 @@ For a normal item, acknowledgement is exactly:
 
 ### PMU-side transmission cycle
 
-On the PMU side, every single-word transmission (a 16-bit major code, the `0x08` streaming introducer, the streaming word-count index, or one 32-bit streamed word split across `0x90180064` and `0x90180068`) follows this exact 5-step ordering:
+On the PMU side, every single-word transmission (a 16-bit major code, the `0x08` streaming introducer, the 32-bit streaming header `(id << 16) | len`, or one 32-bit streamed payload word split across `0x90180064` and `0x90180068`) follows this exact 5-step ordering:
 
 1. Write the 16-bit low halfword (or major code) to `0x90180064` (`CSR[0x0c0032]`), and for a 32-bit streaming word also write the 16-bit high halfword to `0x90180068` (`CSR[0x0c0034]`).
 2. Write `0` to the doorbell register `0x90180066` (`CSR[0x0c0033]`).
@@ -63,7 +63,7 @@ On the PMU side, every single-word transmission (a 16-bit major code, the `0x08`
 
 > **Important doorbell ordering rule:** Do **not** clear `0x90180066` back to `0` immediately after step 5. Writing `0` to `0x90180066` belongs at the start of the *next* transfer cycle (step 2), where it is immediately followed by waiting for `0x90180008[0] == 0`. Clearing `0x90180066` to `0` at the end of a transfer leaves `0x90180008[0]` at `1` while the doorbell is already `0`, which can desynchronize the next word transfer. (Equivalently, a loop that begins with `wait 0x90180008[0] == 1` → write `0x90180064`/`68` → write `0x90180066 = 0` → `wait 0x90180008[0] == 0` → write `0x90180066 = 1` implements the exact same state machine shifted by one step, because `0x90180008[0]` is `1` at reset and after every completed host ACK.)
 
-Acknowledge each major item, the streaming introducer, and **every streamed 32-bit word** unless the terminal `0xff` exception below applies.
+Acknowledge each major item, the streaming introducer, and **every streamed 32-bit word** (the 32-bit header `(id << 16) | len` plus the `len` payload words) unless the terminal `0xff` exception below applies.
 
 ## Major messages
 
@@ -93,19 +93,24 @@ The PMU normal-completion path emits `0x07` and then remains stopped. Its fatal 
 
 ### Wire sequence
 
-After receiving and acknowledging major/command `0x08`:
+On the wire, a streaming message consists of the 16-bit major introducer `0x08` followed by **`len + 1` 32-bit words** (`word 0` is the 32-bit header `(id << 16) | len`, and `words 1..len` are the `len` payload words). The PMU does **not** transmit a separate 16-bit count word before the 32-bit header:
 
-1. Wait for ready (status bit 0 = 0).
-2. Read `j = UCT_WRITE_ONLY_SHADOW` (`0xd0032`). This is the last word index, so exactly **`j + 1` 32-bit words** follow.
-3. For each word, in order:
-   - read low 16 bits from `0xd0032`;
-   - read high 16 bits from `0xd0034`;
-   - reconstruct `word = (high << 16) | low`;
-   - ACK that word;
-   - wait for status bit 0 to return to 0 before the next word.
-4. Resume major-message processing using the next `0xd0032` value.
+1. **PMU side**:
+   - Send 16-bit major code `0x08` (`0x90180064 = 0x0008`) and complete its 5-step handshake.
+   - Immediately load the 32-bit header `(id << 16) | len` (`0x90180064 = len`, `0x90180068 = id`) and assert the doorbell (`0x90180066 = 0` → wait `0x90180008[0] == 0` → `0x90180066 = 1` → wait `0x90180008[0] == 1`).
+   - For each of the `len` payload words (`k = 0 .. len - 1`), load `0x90180064 = payload[k] & 0xffff`, `0x90180068 = payload[k] >> 16`, and complete one 5-step handshake.
+2. **Host side**:
+   - After receiving and acknowledging major/command `0x08`, wait for ready (`UCT_SHADOW.bit0 == 0`). At that instant, the PMU has already placed the 32-bit header `(id << 16) | len` into `0xd0034:0xd0032`.
+   - Read `j = UCT_WRITE_ONLY_SHADOW` (`0xd0032`) **without issuing an ACK**. Because the header is already loaded in the shadow registers, `j` is simply `len` (the low 16 bits of the header), so **`j + 1` (`len + 1`) 32-bit words** (the header currently in the registers plus `len` subsequent payload words) are consumed in the loop that follows.
+   - Loop `j + 1` times (`i = 0 .. j`):
+     - read low 16 bits from `0xd0032` (on `i = 0`, this re-reads `len` from the header);
+     - read high 16 bits from `0xd0034` (on `i = 0`, this reads `id` from the header);
+     - reconstruct `word = (high << 16) | low`;
+     - ACK that word;
+     - wait for status bit 0 to return to 0 before the next word.
+   - Resume major-message processing using the next `0xd0032` value.
 
-The `0x08` item is not itself the 32-bit header and its acknowledgement does not replace any data-word ACK.
+The `0x08` item is not itself the 32-bit header and its acknowledgement does not replace any data-word ACK. Conversely, a PMU implementation must **never** insert an extra standalone `len` transfer between `0x08` and `(id << 16) | len`, because doing so would shift the host's `j + 1` loop by one word.
 
 ### Message framing
 

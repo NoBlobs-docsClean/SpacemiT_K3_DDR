@@ -70,6 +70,7 @@ By transferring only **interface facts, hardware constraints, memory maps, data 
 | [appendix-message-block-fields.md](appendix-message-block-fields.md) | Appendix: Message Block Fields | Complete 293-field catalog (offsets `0x000`–`0x13f`, CSR indices, types, directions) |
 | [appendix-phypara-order.md](appendix-phypara-order.md) | Appendix: `phypara` Order | Exact 69-segment, 5170-halfword serialization table |
 | [appendix-streaming-catalog.md](appendix-streaming-catalog.md) | Appendix: Streaming Catalog | Catalog of 124 observed streaming message IDs, payload lengths, and trace examples |
+| [appendix-reference-envelope.md](appendix-reference-envelope.md) | Appendix: Reference Envelope | Complete 6400 MT/s reference `DDRT` header, message block, `phypara` (5170), and ACSM (4096) dumps |
 
 ---
 

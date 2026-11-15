@@ -50,7 +50,7 @@ The populated size calculation is:
 
 `0x80 + 2 * 0x49a4 = 0x93c8`
 
-DDR1 begins at `0x80 + 0x49a4 = 0x4a24`. The bytes from `0x93c8` through `0x97ff` are still part of the persistent object and still participate in its CRC.
+`DDR1` begins at `0x80 + 0x49a4 = 0x4a24`. The bytes from `0x93c8` through `0x97ff` are still part of the persistent object and still participate in its CRC. Complete plain-text hex dumps of the reference 6400 MT/s `DDRT` header and both controller records (`0x0000..0x93c7`, with instructions for reconstructing a zero-padded `0x9800` fixture) are published in [appendix-reference-envelope.md](appendix-reference-envelope.md).
 
 ### CRC coverage
 

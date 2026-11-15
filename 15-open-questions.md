@@ -54,9 +54,9 @@ While `RdDQS` (`SequenceCtrl[3]`) both emits the 2D read eye contours (`0x0076`/
 
 When building the first-stage loader (`FSBL.bin`) from source with a different GCC toolchain, the post-activation host memory smoke test (`0x4000`-byte pattern/complement check) was observed to hang independently of the PMU firmware, whereas the factory prebuilt `FSBL.bin` completes its post-training flow. Resolving whether this discrepancy stems from compiler code generation, 64-bit pointer/addressing above 4 GiB, cache/MMU state, or DDRC port/region setup requires a controlled host-side investigation.
 
-### 7. Multi-P-state training and P-state SRAM (`0xa0000`)
+### 7. Separate quickboot PMU image (`lp5_quickboot`) internal flow and multi-P-state SRAM (`0xa0000`)
 
-The message block supports `Pstate` selection and a 15-P-state DMA mode (`Pstate[7]`), and the DPHY exposes a 16,384-halfword P-state SRAM window at `0xa0000`. However, only single-P-state operation was observed on the reference board, and P-state SRAM restoration is inactive in the observed quickboot sequence.
+On the host side, the quickboot path (`init_snps_ddrc_quick` / `phyinit_lp5_quick_boot`, see [11-quickboot-path.md](11-quickboot-path.md)) sets `CSR[0x020090] = 1`, `CSR[0x020060] = 3`, `CSR[0x0c0080] = 7`, and `CSR[0x0c0086] = 1`, loads a dedicated quickboot PMU IMEM/DMEM image alongside the saved 320-byte message block (`SequenceCtrl = 0x0001`, `Quickboot = 0x01`), the 5,170-halfword `phypara` stream at DMEM `0x58200` (`ARC 0x80000400`), and a 1,420-byte (710-halfword) parameter table at DMEM `0x59622` (`ARC 0x80002c44`), runs the PMU to completion (`0x07`), and then restores the 4,096-halfword ACSM SRAM (`0x41000`–`0x41fff`) *after* the PMU halts. While the full-training firmware's `Quickboot != 0` branches within `DevInit` are documented in [07-training-behavior.md](07-training-behavior.md), the separate `lp5_quickboot` PMU binary has not been independently analyzed, so how that dedicated image consumes the 710-halfword table at `0x59622` and scatters `phypara` from `0x58200` into PHY CSRs remains open. Likewise, only single-P-state operation was observed on the reference board, and P-state SRAM (`0xa0000`) restoration is inactive (`0`) in the observed quickboot sequence.
 
 ---
 
@@ -72,9 +72,9 @@ The remaining open detail within the ACSM subsystem is the bit-level encoding of
 
 While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, the per-stage CSR write footprints, and the power-on reset nature of mirror group `0x110000` (`ARC 0x90220000`, never written by host tables or PMU firmware) are known, the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`) remains open.
 
-### 10. Temperature derating curves and 4800 MT/s hardware validation
+### 10. Temperature derating curves and 4800 MT/s hardware measurements
 
-DDRC derating registers (`0x00b04`–`0x00b08`, `0x10104`–`0x10108`) and 4800 MT/s clock/timing tables exist in the interface, but hardware validation in this study was performed at 6400 MT/s under ambient bench temperature.
+DDRC derating registers (`0x00b04`–`0x00b08`, `0x10104`–`0x10108`) and 4800 MT/s clock/timing tables exist in the host interface, and the PMU firmware's frequency-dependent formulas (`DRAMFreq = 4800` → `byte[0x80000b68] = 6`, `CSR[0x020012] = 0x5232`, `CSR[0x020186] = 0x0052`) are established, but all hardware training captures in this study were recorded at 6400 MT/s (`MT62F2G32D4DS`); empirical 4800 MT/s `phypara` and eye-margin captures have not yet been measured on the bench.
 
 ---
 

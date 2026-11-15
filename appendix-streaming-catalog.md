@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 <!-- Copyright (C) 2026 Thalles Campagnani -->
 
-[← Previous: Appendix: phypara Order](appendix-phypara-order.md) | [Index](README.md#reading-order-and-contents)
+[← Previous: Appendix: phypara Order](appendix-phypara-order.md) | [Index](README.md#reading-order-and-contents) | [Next: Appendix: Reference Envelope →](appendix-reference-envelope.md)
 
 # Appendix: PMU Streaming Message Catalog
 

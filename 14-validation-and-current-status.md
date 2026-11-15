@@ -144,20 +144,21 @@ Three hardware conclusions follow directly from this controlled comparison:
    - Across all 72 `0x4e`/`0x4f` registers on `DDR0`, the 3-run mean is **`81.55` taps** under forced-air ambient cooling (`C1`–`C3`) vs. **`81.41` taps** under heating (`H1`–`H3`), a net shift of **`-0.14` taps**.
    - On `DDR1`, the 3-run mean is **`80.28` taps** (`C1`–`C3`) vs. **`81.31` taps** (`H1`–`H3`), a net shift of **`+1.03` taps**—smaller than the natural run-to-run mean absolute difference (`1.29`–`2.00` taps across consecutive runs in the same condition).
    - `TrainedVREFCA` (`0x3f`), `TrainedVREFDQ` (`0x25`–`0x28`), and the four eye margins (`RxClkDly_Margin = 0x15..0x18`, `VrefDac_Margin = 0x22..0x27`, `TxDqDly_Margin = 0x14..0x19`, `DeviceVref_Margin = 0x1c..0x24`) are indistinguishable between `C1`–`C3` and `H1`–`H3`.
-2. **Boot-path baseline shift (USB/FDL staging vs. SPI cold boot)**:
-   - Every USB/FDL run (`C1`–`C3` and `H1`–`H3`, regardless of temperature) shifts the `0x4e`/`0x4f` read-eye centers by **`+19` taps** (`62.5 / 62.0` taps in `SPI` → `81.5–82.0 / 80.5–82.0` taps in FDL), shifts `TrainedVREFCA` from **`0x27` (`39`) to `0x3f` (`63`)**, and leaves **`CSR[0x020011] = 0x006f`** (unmasked) instead of `0x000f`.
-3. **Validation rule — Always match the boot path (`CSR[0x020011]` indicator)**:
-   - When comparing `CSR[0x01<r><l>4e]`/`0x4f` or `TrainedVREFCA` against a reference capture, **always compare runs taken through the same boot path** (SPI cold boot vs. SPI cold boot, or USB/FDL vs. USB/FDL), and check `CSR[0x020011]` (`0x000f` vs. `0x006f`) first to confirm which baseline applies.
+2. **Boot-path baseline shift (USB/FDL staging vs. SPI cold boot) and `CSR[0x020011]` save/restore mechanism**:
+   - In `Step 3.3` (`Quickboot == 0`), the PMU saves `CSR[0x020011]` (`0x006f`) to DMEM `halfword[0x8000042a]` and masks `CSR[0x020011] &= 0xff9f` (`0x000f`). At the end of `DevInit` (`Step 6.3`, also gated on `Quickboot == 0`), the PMU restore helper writes `halfword[0x8000042a]` (`0x006f`) back to `CSR[0x020011]` alongside restoring `CSR[0x01<r>0a3] = 0x0b33` (`0x80000430 + 2 * r`). Thus, `CSR[0x020011] = 0x006f` in all six USB/FDL runs (`C1`–`C3` and `H1`–`H3`) is the exact value restored from `0x8000042a` at `Step 6.3`, whereas the SPI cold-boot envelope (`0x000f`) reflects a state where the `& 0xff9f` mask ran without the `Step 6.3` restore remaining in effect.
+   - Alongside `CSR[0x020011] = 0x006f` (and `CSR[0x0c0086] = 0x0001` vs. `0x0000` in SPI, and `CSR[0x01<r>0af] = 0x003a..0x0040` vs. `0x0038..0x003b` in SPI), every USB/FDL run shifts the `0x4e`/`0x4f` read-eye centers by **`+19` taps** (`62.5 / 62.0` taps in `SPI` → `81.5–82.0 / 80.5–82.0` taps in FDL) and shifts all four `TrainedVREFCA` outputs (`A0..B1`) from **`0x27`–`0x2c` (`39`–`44`) to `0x3f` (`63`)**. Because `0x3f` (`63`) is the maximum value of a 6-bit DAC field (`0..63`), all four CA VREF outputs hitting `0x3f` simultaneously indicates upper-rail saturation of the CA VREF search in the USB/FDL operating regime, even though training completes (`0x07`) and the 1D/2D DQ margins remain normal.
+3. **Validation rule — Treat SPI cold boot and USB/FDL staging as two distinct operating points**:
+   - Never use the SPI cold-boot envelope as a ground-truth reference for `CSR[0x01<r><l>4e]`/`0x4f` eye centers or `TrainedVREFCA` on a USB/FDL-staged run (or vice versa). Always compare runs taken through the same boot path (SPI vs. SPI, or USB/FDL vs. USB/FDL), checking `CSR[0x020011]` (`0x000f` vs. `0x006f`) first to confirm which operating point applies.
 
 ### Standalone validation criteria (without a reference capture)
 
 When validating an independent trainer on a board without comparing against a prior `phypara` dump, verify all five standalone invariants:
 
 1. **Execution duration**: Full training (`SequenceCtrl = 0x125f`) completes in the multi-second range (~4.4–5.8 s), never in a few milliseconds (`5–41 ms` indicates an early abort or skipped DQ sweeps).
-2. **`DevInit` completion markers**: `CSR[0x020011]` (`ARC 0x90040022`) is masked from its `0x006f` pre-training value to `0x000f` (with `0x006f` saved at DMEM `0x8000042a`), `CSR[0x02000a]` holds the latched CA clock period (`0x0082`–`0x0086` at 6400 MT/s, updated away from its `0x0040` pre-training seed after the bit 10 falling-edge strobe on `CSR[0x0200e3]`, while `CSR[0x020017]` remains `0x0040`), `CSR[0x020012]`/`0x020186`/`0x020187` hold `0x7353`, `0x0073`, and `0x0041` (updated from `0xa1a1`, `0x00a1`, and `0x0040`), `CSR[0x01<r>0d9]` holds `0x009c` (`156`) across all active ranks, and `CSR[0x0c0086]` transitions to `3` after `DevInit` (or `2` after full training). Note that `CSR[0x01<r>0a3] == 0x0b33` is written by the host pre-training table *before* the PMU starts and therefore does not by itself prove `DevInit` executed.
+2. **`DevInit` completion markers**: `CSR[0x02000a]` holds the latched CA clock period (`0x007e`–`0x0086` at 6400 MT/s, updated away from its `0x0040` pre-training seed after the bit 10 falling-edge strobe on `CSR[0x0200e3]`, while `CSR[0x020017]` remains `0x003e`–`0x0040`), `CSR[0x020012]`/`0x020186`/`0x020187` hold `0x7353`, `0x0073`, and `0x0041`–`0x0042` (updated from `0xa1a1`, `0x00a1`, and `0x0040`), `CSR[0x01<r>0ad]` holds `0x0002`, `CSR[0x01<r>0af]` holds `0x0038`–`0x0040` across `r = 0..3`, `CSR[0x01<r>0d9]` holds `0x009c` (`156`) across all active ranks, and `CSR[0x020060]` (`MemResetL`) holds **`0x0003`** (not `0x0001`, because `Misc == 0x00`). Note that `CSR[0x01<r>0a3] == 0x0b33` is written by the host pre-training table *before* the PMU starts (and restored in `Step 6.3` along with `CSR[0x020011] = 0x006f`), while `CSR[0x0c0086]` (`ARC 0x9018010c`) is a host-side register (`training_table_54` writes `0x0001`, `0` references in the PMU firmware) and must **not** be used as a PMU-side `DevInit` self-check.
 3. **Trained read-eye centers**: Every active lane (`4 ranks × 9 lanes`) has `CSR[0x01<r><l>4e]` and `0x4f` updated away from the `0x0035` pre-training seed (with `0x50`/`0x51` remaining `0x0035` when `DisableTrainingLoop[1] = 0`).
 4. **2D eye opening** (when contour streaming is enabled): Horizontal width is in the **70–124 tap** range (median ~102 taps) and vertical height is **21–32 voltage levels**.
-5. **Self-repeatability**: Two consecutive cold-boot training runs of the new firmware agree within **`<= ±3` taps** across all 36 lanes (excluding the volatile CSRs below).
+5. **Self-repeatability**: Two consecutive training runs of the new firmware under the same boot path agree within **`<= ±3` taps** across all 36 lanes (excluding the volatile CSRs below).
 
 ### Volatile / hardware-counter CSRs to exclude from bit-exact `phypara` diffs
 
@@ -165,13 +166,14 @@ Inside the 5,170-entry `phypara` dump, the live period-counter register and hard
 
 | CSR index | ARC address | Reference pre → post (`0x125f` / `0x0001`) | Reason |
 |---:|---:|---|---|
-| `0x02000a` | `0x90040014` | `0x0040` → `0x0082` (`130`) / `0x0086` (`134`) | Live CA period counter (`CSR[0x0300bf] & 0x01ff`) latched by the `CSR[0x0200e3]` bit 10 falling edge during `DevInit` (`±1..4` tick variation) |
+| `0x02000a` | `0x90040014` | `0x0040` → `0x007f`–`0x0082` (`127`–`130`) / `0x0086` (`134`) | Live CA period counter (`CSR[0x0300bf] & 0x01ff`) latched by the `CSR[0x0200e3]` bit 10 falling edge during `DevInit` (`±1..4` tick variation) |
+| `0x020017` | `0x9004002e` | `0x0040` → `0x003e`–`0x0040` (`62`–`64`) | Live DQ period counter (`CSR[0x0100e0] & 0x01ff`) latched alongside `0x02000a` |
 | `0x020012` | `0x90040024` | `0xa1a1` → `0x7353` | Deterministic frequency bucket computed from `DRAMFreq` (`6400`) and `DfiFreqRatio` (`4`) (`f = 1600`, `f_hi = 9600`; note that `0x3221`/`0x4332` only occurs if a custom trainer mistakenly classifies `2 * T_ca` instead of `DRAMFreq / DfiFreqRatio`) |
 | `0x020186` | `0x9004030c` | `0x00a1` → `0x0073` | Secondary frequency bucket `(bucket3 << 4) \| fine_hi` computed from `DRAMFreq` and `DfiFreqRatio` |
-| `0x020187` | `0x9004030e` | `0x0040` → `0x0041` | Copied unmasked from rank-0 read-only hardware register `CSR[0x0100d5]` (`ARC 0x900201aa`) during `DevInit` |
+| `0x020187` | `0x9004030e` | `0x0040` → `0x0041`–`0x0042` (`65`–`66`) | Copied unmasked from rank-0 read-only hardware register `CSR[0x0100d5]` (`ARC 0x900201aa`) during `DevInit` |
 | `0x09080b` | `0x90121016` | `0x002f` → `0x000f` (or `0x0015`/`0x00ff`) | Masked `& 0xff9f` alongside ACSM clock setup at `CSR[0x090808]` (`0x90121010 + 6`) |
 | `0x09080c` | `0x90121018` | `0x006f` → `0x000f` (or `0x002d`/`0x0065`) | Masked `& 0xff9f` alongside ACSM clock setup at `CSR[0x090808]` (`0x90121010 + 8`) |
-| `0x0c0086` | `0x9018010c` | `0x0000` → `0x0002` (`0x125f`) / `0x0003` (`0x0001`) | Sticky PHY/microcontroller hardware status bits (`1` during PMU execution, `3` after `DevInit`, `2` after full training; 0 references in PMU firmware) |
+| `0x0c0086` | `0x9018010c` | `0x0001` → `0x0000` (SPI) / `0x0001` (FDL) | Host-side ECC register (`training_table_54` writes `0x0001`; `0` references in PMU firmware) |
 
 ### Diagnostic failure signatures
 

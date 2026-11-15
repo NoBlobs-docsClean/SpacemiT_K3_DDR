@@ -126,7 +126,7 @@ Comparing multiple independent cold-boot full-training runs on the reference 640
 When validating an independent trainer on a board without comparing against a prior `phypara` dump, verify all five standalone invariants:
 
 1. **Execution duration**: Full training (`SequenceCtrl = 0x125f`) completes in the multi-second range (~4.4–5.8 s), never in a few milliseconds (`5–41 ms` indicates an early abort or skipped DQ sweeps).
-2. **`DevInit` completion marker**: `CSR[0x0100a3]` (`ARC 0x90020146`) is non-zero and `CSR[0x02000a]`/`0x020017` hold measured clock periods (`~0x0190` / `0x0100` at 6400 MT/s).
+2. **`DevInit` completion markers**: `CSR[0x020011]` (`ARC 0x90040022`) is masked from its `0x006f` pre-training value to `0x000f` (with `0x006f` saved at DMEM `0x8000042a`), `CSR[0x02000a]` and `CSR[0x020017]` hold measured clock periods (`~0x0190` / `0x0100` at 6400 MT/s), `CSR[0x020012]`/`0x020186`/`0x020187` hold non-zero frequency-bucket codes (`0x3221`/`0x4332` and `0x0201`/`0x0302`), and `CSR[0x0c0086]` transitions to `3` after `DevInit` (or `2` after full training). Note that `CSR[0x01<r>0a3] == 0x0b33` is written by the host pre-training table *before* the PMU starts and therefore does not by itself prove `DevInit` executed.
 3. **Trained read-eye centers**: Every active lane (`4 ranks × 9 lanes`) has `CSR[0x01<r><l>4e]` and `0x4f` updated away from the `0x0035` pre-training seed (with `0x50`/`0x51` remaining `0x0035` when `DisableTrainingLoop[1] = 0`).
 4. **2D eye opening** (when contour streaming is enabled): Horizontal width is in the **70–124 tap** range (median ~102 taps) and vertical height is **21–32 voltage levels**.
 5. **Self-repeatability**: Two consecutive cold-boot training runs of the new firmware agree within **`<= ±3` taps** across all 36 lanes (excluding the 7 volatile CSRs below).
@@ -152,12 +152,12 @@ When bringing up new PMU firmware or host table overrides, use the following sym
 | Observed symptom | Typical duration | Root cause |
 |---|---:|---|
 | PMU hangs silently (no `0x07` or `0xff`; USB FDL gadget wedged on reset) | Timeout | Instruction referenced `r16`–`r25` (missing `-mrf16` at compile or link), unaligned 32-bit `ld` on a 6-byte table stride, 32-bit `ld`/`st` on a 16-bit `0x90xxxxxx` CSR, AUX `0x103`–`0x105` accessed as memory instead of `lr`/`sr`, or `libgcc` `__muldi3`/`__udivsi3` invoked |
-| PMU emits fatal `0x000000ff` early (`DDR training failed!`) | **12–41 ms** | Invalid electrical configuration (`TX DS >= 60 Ω` or `OFF`), `.bss` linked at `0x80000400` (wiping `phypara` / ODT table `0x80000424` during startup), or `CsPresent`/`EnabledDQs` mismatch |
+| PMU emits fatal `0x000000ff` early (`DDR training failed!`) | **12–41 ms** | Invalid electrical configuration (`TX DS >= 60 Ω` or `OFF`), `.bss` linked at `0x80000400` (wiping host-supplied `phypara` / runtime state during startup), or `CsPresent`/`EnabledDQs` mismatch |
 | PMU emits `0x07` far too fast (`DDR training consume 5 ms`–`28 ms`) | **5–28 ms** | 32-bit store to `0x80000458` clobbered delay divisor `0x8000045a`, or `SequenceCtrl` stage mask lacked `RdDQS` (`bit 3`) / `WrDq` (`bit 4`) / `DRAM DCA` (`bit 6`) |
 | Late host message-block override (`SequenceCtrl`, `HdtCtrl`, `Train2DMisc`) has no effect | Normal (~5.6 s) | Host wrote `DPHY_BASE + 4 * 0x58000` *after* the pre-training phase closed (immediately before `pwrctl` bit 11); hardware discards those writes |
 | Mailbox streaming takes 5–7 minutes with `Train2DMisc[0] = 1` | **>300 s** | Host receiver printed a fixed 15/16-word buffer per frame over 115200 bps UART instead of printing only `len + 1` words |
 | `CSR[0x01<r><l>4e]` stays at `0x0035` after training | Variable | `RdDQS` (`SequenceCtrl[3]`) did not run, or `DisableTrainingLoop[1]` (`0x80000102 & 2`) was inadvertently set, averaging `0x4e` with `0x50` (`0x0035`) |
-| `CSR[0x020012]` stays at `0x0000` or `CSR[0x020011]` stays at `0x0001` | ~15 ms+ | Missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the `0x020011` `& 0xff9f` save/restore or period-counter reads |
+| `CSR[0x02000a]`/`0x020017`/`0x020012` stay at `0x0000` or `CSR[0x020011]` stays at `0x006f` | ~15 ms+ | Period counter enable wrote `1` to `CSR[0x0200e3]` instead of setting bits `[11:10]` (`|= 0x0c00`) and clearing `CSR[0x0200e5]` bits `[4:0]` (`&= 0xffe0`), or missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the `0x020011` `& 0xff9f` update or counter reads |
 
 ## Safe bench observation policy
 

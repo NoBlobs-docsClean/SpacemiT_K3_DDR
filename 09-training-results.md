@@ -68,7 +68,7 @@ Each value is the smallest distance from the trained center to the failing regio
 
 `TrainedDRAMDFE` uses bit fields `[6:4]` and `[2:0]`; `TrainedDRAMDCA` uses `[7:4]` and `[3:0]`. Quickboot copies these values, and the CA/DQ VREF results, into the message's mode-register shadow entries.
 
-The quickboot-related PLL outputs are `QBPllUPllProg0..3` at `0x130`, `0x132`, `0x134`, and `0x136`, followed by `QBPllCtrl1`, `QBPllCtrl4`, and `QBPllCtrl5` at `0x138`, `0x13a`, and `0x13c`.
+The quickboot-related PLL outputs are `QBPllUPllProg0..3` at `0x130`, `0x132`, `0x134`, and `0x136`, followed by `QBPllCtrl1`, `QBPllCtrl4`, and `QBPllCtrl5` at `0x138`, `0x13a`, and `0x13c`. When `Pstate & 0x20` is non-zero (`Pstate = 0x30` on the reference profile), `DevInit` populates these seven 16-bit words by direct CSR read-back from `CSR[0x020088]`, `0x020089`, `0x02008a`, `0x02008c`, `0x02004a`, `0x02004b`, and `0x02004c` (`ARC 0x90040110`–`0x90040118` and `0x90040094`–`0x90040098`; see [05-message-block.md](05-message-block.md)).
 
 ## Observed: exact `phypara` serialization
 
@@ -97,10 +97,10 @@ The **107 `CHANGED` entries** (comparing the base pre-training table + topology 
 
 - **Trained per-lane read-eye delay centers (`0x01<r><l>4e` and `0x01<r><l>4f`, 70 entries changed from `0x0035`)**: Across the 36 lanes (`4 ranks × 9 lanes = 72` total `0x4e`/`0x4f` registers), 70 entries moved from their `0x0035` pre-training seed to `0x002d`–`0x004a` during `RdDQS` (`SequenceCtrl[3]`), while 2 entries (`rank 0, lane 0, 0x4f` and `rank 0, lane 8, 0x4e`) happened to converge back to `0x0035`. The companion registers `CSR[0x01<r><l>50]` and `CSR[0x01<r><l>51]` remain at `0x0035` across all 36 lanes (`pre-unchanged`) because `DisableTrainingLoop[1]` (`0x80000102 & 2`) is `0` on the reference profile.
 - **Host `io_override` TX impedance entries (`0x01<r>040, 42..45` and `0x03<r>040..43`, 28 entries)**: Rank-global TX drive strength registers on `lane 0` updated from the base pre-training table (`0x0c0c` / `0x0e0e`) to `0x0f0f` (`PHY_R_30`, 30 Ω) by the host's electrical `io_override` pass before PMU start.
-- **Master clock-period calibration and control in `DevInit` (`0x02xxxx`, 6 entries)**: `0x02000a` (CA period `0x0190`), `0x020011` (`0x0041` temporary `[6:5]` clear/restore), `0x020012` (`0x3221` / `0x4332` frequency bucket), `0x020017` (DQ period `0x0100`), `0x020186`, and `0x020187` (`0x0201` / `0x0302`).
+- **Master clock-period calibration and control in `DevInit` (`0x02xxxx`, 6 entries)**: `0x02000a` (CA period `0x0190`), `0x020011` (pre-training `0x006f` saved to DMEM `0x8000042a` and masked `& 0xff9f` to `0x000f`), `0x020012` (`0x3221` / `0x4332` frequency bucket), `0x020017` (DQ period `0x0100`), `0x020186`, and `0x020187` (`0x0201` / `0x0302`).
 - **ACSM/sequencer and status updates (4 entries)**: `0x09080b`, `0x09080c`, `0x020060`, and `0x0c0086`.
 
-In addition, per-lane trained CSRs in group `0x01` that are **not** present in the host pre-training table—such as write-leveling `0x0c`/`0x0d` (`0x009a`/`0x009b`), write DQ delays `0x10..0x13` (`0x0105`–`0x011a`), read/write offsets `0x1c..0x1f`, `0x24..0x27`, per-bit DCA delays `0x68..0x6f` (shifted by ~+4 taps during `DRAM DCA`), and `0xaa`/`0xb5`/`0xbe`—are classified under `host-untouched-nz` (written from `0x0000` by the PMU during training).
+In addition, per-lane trained CSRs in group `0x01` that are **not** present in the host pre-training table—such as write-leveling `0x0c`/`0x0d` (`0x009a`/`0x009b`), write DQ delays `0x10..0x13` (`0x0105`–`0x011a`), read/write offsets `0x1c..0x1f`, `0x24..0x27`, per-bit DCA delays `0x68..0x6f` (shifted by ~+4 taps during `DRAM DCA`), and `0xaa`/`0xb5`/`0xbe`—are classified under `host-untouched-nz` (written from `0x0000` by the PMU during training). Note that `CSR[0x01<r>0a3]` (`0x0b33` across `r = 0..3`) is written by the host pre-training table *before* the PMU starts and is only read by the PMU during `DevInit` (saved to DMEM `0x80000430`–`0x80000437`), so `0x01<r>0a3` belongs to `pre-unchanged`.
 
 ### Measured `CSR[0x4e]` / `CSR[0x4f]` read-eye center table (6400 MT/s reference)
 
@@ -113,9 +113,9 @@ On the reference 6400 MT/s dual-rank x16 board (`TX DS = 30 Ω`, `RX ODT = 60 Ω
 | Rank 2 (`0x012<l>4e/4f`) | `44/3d` | `38/3a` | `42/3d` | `3b/2d` | `3f/40` | `48/3e` | `44/3f` | `3e/38` | `3a/43` |
 | Rank 3 (`0x013<l>4e/4f`) | `42/43` | `4a/3d` | `3a/3e` | `47/40` | `45/44` | `38/46` | `40/38` | `3d/3f` | `41/37` |
 
-### Live PHY mirror group `0x110000` (`ARC 0x90220000`)
+### Hardware power-on mirror group `0x110000` (`ARC 0x90220000`)
 
-Outside the 69 `phypara` segments (which span groups `0x01` through `0x0c`), the PMU also accesses a live mirror/alias region at CSR index base `0x110000` (`ARC 0x90220000`, `host DPHY_BASE + 0x440000`) with a per-lane structure mirroring group `0x010000` (`1,180` CSR offsets accessed by the PMU, of which `1,024` read back non-zero after training). Because quickboot restores full functionality from `phypara` + `ACSM` without saving `0x110000`, this region acts as a hardware shadow/alias of the active lane state during training rather than an independent quickboot container.
+Outside the 69 `phypara` segments (which span groups `0x01` through `0x0c`), the DPHY exposes a secondary register block at CSR index base `0x110000` (`ARC 0x90220000`, `host DPHY_BASE + 0x440000`) with a per-lane layout mirroring group `0x010000` (`1,024` non-zero registers out of `1,180` sampled offsets). Neither the host pre/post-training tables nor the PMU firmware write to `0x110000`–`0x113fff`, and quickboot restores full functionality from `phypara` + `ACSM` without touching `0x110000`. The non-zero values in `0x110000` are therefore hardware power-on reset state (or read-only hardware shadow state) and require no software initialization.
 
 During quickboot, the saved `phypara` byte stream is copied sequentially to DMEM index `0x58200`. The PMU consumes that serialized representation; the host does not individually scatter the values back to PHY CSRs in this path.
 

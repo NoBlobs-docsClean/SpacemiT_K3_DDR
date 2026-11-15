@@ -60,19 +60,27 @@ The message block supports `Pstate` selection and a 15-P-state DMA mode (`Pstate
 
 ## Unresolved hardware questions
 
-### 8. Bit-level definitions of internal PHY CSRs, physical lane-to-DQ mapping, and mirror group `0x110000`
+### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) command encoding and MRW/MRR/MPC issuance
 
-While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, and the per-stage CSR write footprints are known, several hardware-level questions remain open:
+The Address/Command State Machine (ACSM) SRAM occupies 4,096 16-bit halfwords (`0x2000` bytes) at host CSR index `0x41000`–`0x41fff` (`ARC 0x90082000`–`0x90083ffe`):
 
-- the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`);
-- the hardware role of live mirror group `0x110000` (`ARC 0x90220000`, 1,180 CSRs accessed during training, 1,024 non-zero, not included in `phypara`); and
+- Before PMU execution, ACSM SRAM contains uninitialized power-on SRAM data (neither the host pre-training table nor the post-training table writes to `0x41000`–`0x41fff`).
+- After full training (`SequenceCtrl = 0x125f`), 1,845 of the 4,096 halfwords hold non-zero values (starting at offset `8` with `0xc9d8` = `51672`), which the host collects and saves into the `DDRT` quickboot envelope.
+- Inside the PMU firmware, ACSM addresses are computed dynamically from base registers and table offsets rather than appearing as literal `0x90082xxx` or `0x40020`/`0x400fd`/`0x40100` immediate constants.
+- **Open gap for independent PMU firmware**: While quickboot simply restores the saved 4,096-halfword ACSM image wholesale, an independent full-training PMU firmware that executes active DRAM mode-register writes (`MRW`), mode-register reads (`MRR`), or multi-purpose commands (`MPC`) through the ACSM sequencer requires the bit-level encoding of ACSM command halfwords and the exact sequencer trigger/poll registers in group `0x04` (`0x40000`–`0x40fff`).
+
+### 9. Bit-level definitions of internal PHY CSRs and physical lane-to-DQ mapping
+
+While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, the per-stage CSR write footprints, and the power-on reset nature of mirror group `0x110000` (`ARC 0x90220000`, never written by host tables or PMU firmware) are known, several hardware-level questions remain open:
+
+- the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`); and
 - the internal hardware mechanism that updates `CSR[0x09080b]` and `CSR[0x09080c]` during training.
 
-### 9. Expected PHY hardware signature/version value
+### 10. Expected PHY hardware signature/version value
 
 The PMU firmware checks a hardware signature/version register early in execution and aborts on mismatch, and writes `PmuRevision` (`0x002`) to the message block. The complete table of accepted silicon revision codes is not cataloged.
 
-### 10. Temperature derating curves and 4800 MT/s hardware validation
+### 11. Temperature derating curves and 4800 MT/s hardware validation
 
 DDRC derating registers (`0x00b04`–`0x00b08`, `0x10104`–`0x10108`) and 4800 MT/s clock/timing tables exist in the interface, but hardware validation in this study was performed at 6400 MT/s under ambient bench temperature.
 

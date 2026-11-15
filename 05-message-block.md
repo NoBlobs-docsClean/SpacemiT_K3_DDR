@@ -250,6 +250,22 @@ Each value is the minimum, over all eyes in that timing group, of the distance f
 
 `TrainedDRAMDFE` carries upper/lower fields in bits [6:4] and [2:0]. `TrainedDRAMDCA` carries them in [7:4] and [3:0]. Intervening bytes are reserved.
 
+### Quickboot PLL outputs (`0x130`–`0x13d`)
+
+When `Pstate & 0x20` is non-zero (`Pstate = 0x30` on the reference 6400 MT/s profile), `DevInit` (`SequenceCtrl[0]`) populates the seven 16-bit quickboot PLL output words at byte offsets `0x130`–`0x13d` by **direct 16-bit read-back from group `0x02` PHY CSRs** (they are not computed from `DRAMFreq`):
+
+| Message byte offset | ARC DMEM address | Field | Source PHY CSR index | Source ARC CSR address | Initialization / hardware origin |
+|---:|---:|---|---:|---:|---|
+| `0x130`–`0x131` | `0x80000130` | `QBPllUPllProg0` | `0x020088` | `0x90040110` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x132`–`0x133` | `0x80000132` | `QBPllUPllProg1` | `0x020089` | `0x90040112` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x134`–`0x135` | `0x80000134` | `QBPllUPllProg2` | `0x02008a` | `0x90040114` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x136`–`0x137` | `0x80000136` | `QBPllUPllProg3` | `0x02008c` | `0x90040118` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x138`–`0x139` | `0x80000138` | `QBPllCtrl1` | `0x02004a` | `0x90040094` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x13a`–`0x13b` | `0x8000013a` | `QBPllCtrl4` | `0x02004b` | `0x90040096` | Hardware PLL state (never written by host tables or PMU firmware) |
+| `0x13c`–`0x13d` | `0x8000013c` | `QBPllCtrl5` | `0x02004c` | `0x90040098` | Initialized to `0x2e8f` by the host pre-training table |
+
+If `Pstate & 0x20` is `0`, the PMU leaves `0x80000130`–`0x8000013c` untouched. None of the seven source CSRs (`0x020088`–`0x02008c`, `0x02004a`–`0x02004c`) are part of the 69 `phypara` serialization segments; quickboot receives them through the saved 320-byte message block. During `DevInit`, the PMU does not poll `CSR[0x0200c9]` (`ARC 0x90040192`) or any PLL lock status bit—PLL and clock stabilization waits use fixed hardware RTC timer delays.
+
 ### Mapping trained results back to MR inputs for quickboot
 
 Before restoring saved DMEM, the reference quickboot flow copies each trained result to the same channel/rank position in the corresponding MR input array:

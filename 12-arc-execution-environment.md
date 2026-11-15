@@ -48,24 +48,37 @@ Consequently, **`-mrf16` is mandatory on every compiler invocation and on the fi
 
 ## Observed: `phypara` base (`0x80000400`) vs. firmware `.bss` (`0x80004000`)
 
-Before releasing the PMU, the host loader populates the message block (`0x80000000`–`0x8000013f`, host DPHY `0x58000`–`0x5809f`) and pre-training PHY parameter structures starting at **`0x80000400`** (host DPHY `0x58200`, including ODT configuration near `0x80000424`). Every host DPHY index in `0x58000`–`0x5ffff` maps into ARC DMEM via:
+Before releasing the PMU, the host loader populates the message block (`0x80000000`–`0x8000013f`, host DPHY `0x58000`–`0x5809f`) and pre-training PHY parameter structures starting at **`0x80000400`** (host DPHY `0x58200`). Every host DPHY index in `0x58000`–`0x5ffff` maps into ARC DMEM via:
 
 ```text
 ARC_DMEM_address = 0x80000000 + 2 * (host_dphy_index - 0x58000)
 ```
 
-This low DMEM region is **live input state**, not zero-initialized scratch memory:
+This low DMEM region is **live input and runtime state**, not zero-initialized scratch memory:
 
 | Region / Purpose | Host DPHY Index | ARC Address | Contract |
 |---|---|---|---|
 | Message block (`0x140` bytes active, `0x400` reserved) | `0x58000`–`0x5809f` (`0x581ff`) | `0x80000000`–`0x8000013f` (`0x800003ff`) | Host input parameters and PMU output fields |
-| Host-provided `phypara` / parameter area | `0x58200`–`0x584d1` (full) / `0x58200`–`0x59621` (QB) | **`0x80000400`–`0x800009a3`** (full) / `0x80000400`–`0x80002c43` (QB) | Live configuration written by SPL; **must not be zeroed** by startup |
+| Host-provided `phypara` / parameter area | `0x58200`–`0x584d1` (full) / `0x58200`–`0x59621` (QB) | **`0x80000400`–`0x800009a3`** (full) / `0x80000400`–`0x80002c43` (QB) | Live configuration written by SPL plus PMU runtime state; **must not be zeroed** by startup |
 | Quickboot extra DMEM parameter table | `0x59622`–`0x598e7` | `0x80002c44`–`0x800031cf` | 1,420-byte (710-halfword) quickboot configuration table |
 | Independent firmware `.bss` / globals (recommended placement) | `0x5a000`+ | **`0x80004000`+** | Safe region for zero-initialized compiler `.bss` and static state |
 | Transient firmware/host scratch | `0x5f000`–`0x5f07f` | `0x8000e000`–`0x8000e0ff` | Read and cleared by host SPL; not persistent across phases |
 | Initial stack top | `0x60000` | `0x80010000` | Grows downward |
 
-If a C startup routine places `.bss` at `0x80000400` and zeros it on boot, it wipes the SPL-supplied `phypara` and ODT tables before training begins, causing immediate training failure. Furthermore, if the compiler uses the hardware `gp` register (`r26`) for its own small-data section (`.sdata`/`.sbss`), that compiler `gp` must point to the firmware's own data region rather than colliding with the `0x80000400` parameter table.
+Within `0x80000400`–`0x800004ff` (relative to `gp = 0x80000400`), the PMU firmware reads and writes the following specific runtime state offsets during `DevInit` and subsequent stages:
+
+| ARC DMEM Address | Width | Role during PMU execution |
+|---:|---|---|
+| `0x8000042a` | 16-bit | Saved pre-training value of `CSR[0x020011]` (`0x006f`) before masking bits `[6:5]` to `0x000f` |
+| `0x8000042c` | 16-bit | Stage execution progress bitmask (`\|= 1`, `\|= 2`, `\|= 4`, `\|= 8`) |
+| `0x80000430`–`0x80000437` | 4 × 16-bit | Saved per-rank values of `CSR[0x01<r>0a3]` (`0x0b33` for `r = 0..3`) |
+| `0x80000438`, `0x8000043a` | 16-bit | Saved state words during `DevInit` |
+| `0x80000458`, `0x8000045a` | 16-bit | Scaled timer delay state and divisor (`0x8000045a` is the delay loop divisor; a 32-bit store to `0x80000458` clobbers `0x8000045a` and breaks all hardware delays) |
+| `0x8000045b`–`0x8000046c` | 8/16-bit | Per-channel / per-rank mode and configuration scratch bytes/halfwords |
+| `0x8000047c`, `0x8000047e` | 16-bit | Saved state words during `DevInit` |
+| `0x800004a8`, `0x800004b0`, `0x800004bc`, `0x800004cc`, `0x800004de`, `0x800004f4` | 16-bit | Sub-table descriptors and stage scratch words |
+
+If a C startup routine places `.bss` at `0x80000400` and zeros it on boot, it wipes the SPL-supplied parameter tables before training begins, causing immediate training failure. Furthermore, if the compiler uses the hardware `gp` register (`r26`) for its own small-data section (`.sdata`/`.sbss`), that compiler `gp` must point to the firmware's own data region rather than colliding with the `0x80000400` parameter table.
 
 ## Observed: access widths and unaligned table strides
 

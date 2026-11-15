@@ -23,7 +23,7 @@ In this document, **must** denotes a mandatory hardware or ABI requirement verif
 ## BR-02 — Startup memory placement and `.bss` isolation
 
 - Firmware startup must initialize only memory regions owned by the firmware's own static variables. It must never clear host-supplied input state.
-- Firmware `.bss` **must not overlap `0x80000400`**. That region holds the `phypara` and electrical configuration written by the host SPL (including ODT parameters near `0x80000424`). Zeroing `0x80000400` during startup erases the input configuration and causes training to abort.
+- Firmware `.bss` **must not overlap `0x80000400`**. That region holds the `phypara` and electrical configuration written by the host SPL (as well as runtime state words such as `0x8000042a`, `0x8000042c`, `0x80000430`–`0x80000437`, and the delay divisor at `0x80000458`/`0x8000045a`). Zeroing `0x80000400` during startup erases the input configuration and causes training to abort.
 - Place firmware `.bss` and internal uninitialized globals at **`0x80004000`** (or higher unused DMEM below the stack and message scratch area).
 - The compiled binary must fit both the 64 KiB PMU IMEM (`0x50000`) and the host loader's decompression buffer limit for its target boot mode (`0x10000` bytes for full training, `0x6800` bytes for quickboot).
 
@@ -80,13 +80,15 @@ In this document, **must** denotes a mandatory hardware or ABI requirement verif
 
 ## BR-09 — Mailbox handshake and 16-bit protocol compliance
 
-- All PMU accesses to the mailbox registers—status **`0x90180008`**, low data/command **`0x90180064`**, doorbell/ACK **`0x90180066`**, and high data **`0x90180068`**—must use **16-bit halfword operations (`ldh`/`sth`)**.
-- Sending a major message requires:
-  1. Polling `0x90180008` bit 0 until `0` (mailbox free);
-  2. Writing the 16-bit code to `0x90180064`;
-  3. Writing `1` to `0x90180066` (doorbell);
-  4. Polling `0x90180008` bit 0 until `1` (host acknowledged), then clearing `0x90180066` to `0`.
-- Sending a streaming message (`0x08`) requires first sending command `0x08` with its handshake, then sending the 32-bit header `(id << 16) | len` and each of the `len` 32-bit payload words as `(low_16 -> 0x90180064, high_16 -> 0x90180068)` with a full doorbell/ACK handshake per word.
+- All PMU accesses to the mailbox registers—status **`0x90180008`** (`CSR[0x0c0004]`), low data/command **`0x90180064`** (`CSR[0x0c0032]`), doorbell/ACK **`0x90180066`** (`CSR[0x0c0033]`), and high data **`0x90180068`** (`CSR[0x0c0034]`)—must use **16-bit halfword operations (`ldh`/`sth`)**.
+- Sending a 16-bit major message (or streaming introducer/count word) requires the exact 5-step sequence:
+  1. Writing the 16-bit code to `0x90180064` (and high 16-bit halfword to `0x90180068` when sending a 32-bit word);
+  2. Writing `0` to `0x90180066` (clear doorbell);
+  3. Polling `0x90180008` bit 0 until `0` (mailbox ready);
+  4. Writing `1` to `0x90180066` (assert doorbell);
+  5. Polling `0x90180008` bit 0 until `1` (host acknowledged).
+- **Do not clear `0x90180066` to `0` after step 5**: `0x90180066 = 0` belongs at step 2 of the next word transfer. Clearing `0x90180066` to `0` immediately after step 5 leaves `0x90180008` bit 0 at `1` while the doorbell is `0`, which can desynchronize the next transfer.
+- Sending a streaming message (`0x08`) requires first sending command `0x08` with its handshake, then the count word `len`, then the 32-bit header `(id << 16) | len`, and finally each of the `len` 32-bit payload words as `(low_16 -> 0x90180064, high_16 -> 0x90180068)` with the full 5-step doorbell/ACK handshake per word.
 
 ## BR-10 — Verification invariants before hardware deployment
 

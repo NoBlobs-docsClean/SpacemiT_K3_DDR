@@ -25,31 +25,43 @@ Host byte address is `DPHY_BASE + 4 * index`.
 | `0xd0032` | `UCT_WRITE_ONLY_SHADOW` | Major code, streaming low halfword, or streaming count. |
 | `0xd0034` | `UCT_DATA_WRITE_ONLY_SHADOW` | Streaming high halfword. |
 | `0xd0099` | `MICRO_RESET` | Start with 9,1,0; stop/stall with 1. |
-| `0x200c9` | PLL status resource | Read by the reference after major `0xff`; it is diagnostic data, not an error code. |
+| `0x200c9` | PLL status resource | Read by the host after major `0xff` as diagnostic data (not accessed by the PMU firmware). |
 
 ### PMU ARC addresses
 
-| Address | Role |
-|---:|---|
-| `0x90180008` | Mailbox status, bit 0 |
-| `0x90180064` | Major/command or low 16 bits of a data word |
-| `0x90180066` | Doorbell/acknowledgement control |
-| `0x90180068` | High 16 bits of a data word |
+| Address | Host CSR Index | Role |
+|---:|---:|---|
+| `0x90180008` | `0x0c0004` | Mailbox status, bit 0 |
+| `0x90180064` | `0x0c0032` | Major/command or low 16 bits of a data word |
+| `0x90180066` | `0x0c0033` | Doorbell/acknowledgement control |
+| `0x90180068` | `0x0c0034` | High 16 bits of a data word |
 
-The host shadow registers and PMU registers are two views of the same producer/consumer mechanism, not independent mailboxes.
+The host shadow registers and PMU registers are two views of the same producer/consumer mechanism, not independent mailboxes. All PMU accesses to these registers use 16-bit halfword loads and stores (`ldh`/`sth`).
 
 ## Single-item handshake
+
+### Host-side consumption cycle
 
 Before consuming an item, the host waits for `UCT_SHADOW.bit0 == 0`.
 
 For a normal item, acknowledgement is exactly:
 
-1. Write 0 to `DCT_WRITE_PROT` (`0xd0031`).
+1. Write `0` to `DCT_WRITE_PROT` (`0xd0031`).
 2. Wait until `UCT_SHADOW.bit0 == 1`.
-3. Write 1 to `DCT_WRITE_PROT`.
+3. Write `1` to `DCT_WRITE_PROT`.
 4. Before reading the next item, wait until `UCT_SHADOW.bit0 == 0`.
 
-On the PMU side, the complementary behavior is to wait for status 0, publish low/high halves, signal the doorbell, and wait for the host acknowledgement. The reference polls both sides without timeouts.
+### PMU-side transmission cycle
+
+On the PMU side, every single-word transmission (a 16-bit major code, the `0x08` streaming introducer, the streaming word-count index, or one 32-bit streamed word split across `0x90180064` and `0x90180068`) follows this exact 5-step ordering:
+
+1. Write the 16-bit low halfword (or major code) to `0x90180064` (`CSR[0x0c0032]`), and for a 32-bit streaming word also write the 16-bit high halfword to `0x90180068` (`CSR[0x0c0034]`).
+2. Write `0` to the doorbell register `0x90180066` (`CSR[0x0c0033]`).
+3. Poll status `0x90180008` (`CSR[0x0c0004]`) until `bit 0 == 0` (mailbox ready for new transfer).
+4. Write `1` to the doorbell register `0x90180066` (`CSR[0x0c0033]`) to signal the host that new data is valid.
+5. Poll status `0x90180008` (`CSR[0x0c0004]`) until `bit 0 == 1` (host has acknowledged consumption).
+
+> **Important doorbell ordering rule:** Do **not** clear `0x90180066` back to `0` immediately after step 5. Writing `0` to `0x90180066` belongs at the start of the *next* transfer cycle (step 2), where it is immediately followed by waiting for `0x90180008[0] == 0`. Clearing `0x90180066` to `0` at the end of a transfer leaves `0x90180008[0]` at `1` while the doorbell is already `0`, which can desynchronize the next word transfer. (Equivalently, a loop that begins with `wait 0x90180008[0] == 1` → write `0x90180064`/`68` → write `0x90180066 = 0` → `wait 0x90180008[0] == 0` → write `0x90180066 = 1` implements the exact same state machine shifted by one step, because `0x90180008[0]` is `1` at reset and after every completed host ACK.)
 
 Acknowledge each major item, the streaming introducer, and **every streamed 32-bit word** unless the terminal `0xff` exception below applies.
 

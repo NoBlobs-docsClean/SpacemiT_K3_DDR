@@ -153,8 +153,8 @@ Principal DPHY CSR groups:
 | `0x07` | `0x70000` | `0x900e0000` | Maximum read latency (`MxRdLat`) registers |
 | `0x09` | `0x90000` | `0x90120000` | PHY/P-state configuration block (includes 1536-entry sequential segment at `0x9002e`) |
 | `0x0a` | `0xa0000` | `0x90140000` | P-state SRAM (16384 halfwords) |
-| `0x0c`, `0x0d` | `0xc0000`, `0xd0000` | `0x90180000`, `0x901a0000` | Mailbox, clock enables (`0xc0080`), mux (`0xd0000`), and PMU reset (`0xd0099`) |
-| `0x11` | `0x110000` | `0x90220000` | Live DQ mirror state (4 ranks × 9 lanes × ~24 offsets; never written by host tables, saved/restored by quickboot) |
+| `0x0c`, `0x0d` | `0xc0000`, `0xd0000` | `0x90180000`, `0x901a0000` | Mailbox (`0x0c0004`, `0x0c0032`–`0x0c0034`), clock enables (`0x0c0080`), status (`0x0c0086`), mux (`0x0d0000`), and PMU reset (`0x0d0099`) |
+| `0x11` | `0x110000` | `0x90220000` | Read-only/power-on default DQ mirror block (1,024 non-zero hardware power-on reset registers across 4 ranks × 9 lanes; never written by host tables or PMU firmware, and not part of `phypara`) |
 | `0x12`, `0x13`, `0x19` | `0x120000`, `0x130000`, `0x190000` | `0x90240000`, `0x90260000`, `0x90320000` | Secondary/mirror PHY control, CA, and lanes 8–9 extension blocks |
 
 Within the DQ block (`group = 0x01`, base `0x10000`), not every offset is replicated across all 9 lanes:

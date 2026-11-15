@@ -62,10 +62,10 @@ The firmware also contains retraining loops. `DisableTrainingLoop` can suppress 
 
 Sweeping `SequenceCtrl` bit by bit on the reference 6400 MT/s dual-rank x16 platform reveals the exact execution duration and CSR write footprint of each stage (relative to a `SequenceCtrl = 0x0000` baseline):
 
-| `SequenceCtrl` | Enabled stages | Duration (ms) | Incremental CSR writes vs. `0x0000` | Primary CSR / message-block effects |
+| `SequenceCtrl` | Enabled stages | Duration (ms) | Incremental `phypara` entries changed vs. `0x0000` | Primary CSR / message-block effects |
 |---|---|---:|---:|---|
 | `0x0000` | None (PMU framework only) | 8 | 0 (baseline) | Enters and exits cleanly without touching `0x02xxxx` calibration CSRs |
-| `0x0001` | `DevInit` | 15 | 68 | Calibrates group `0x02` master clock period (`0x02000a`, `0x020017`, `0x020012`, `0x020186`, `0x020187`), initializes ACSM (`0x040020`, `0x0400fd`, `0x040100`), updates `0x0c0086` (`0x0003`) |
+| `0x0001` | `DevInit` | 15 | 68 (507 total CSR write ops) | Executes 6-phase PHY/DRAM initialization (507 CSR writes across groups `0x00`–`0x0c`), calibrates group `0x02` master clock period (`0x02000a`, `0x020017`, `0x020012`, `0x020186`, `0x020187`, `0x020011`), reads back `QBPll*` (`0x80000130`–`0x8000013c`), updates `0x09080b`/`0x09080c` and `0x0c0086` (`0x0003`) |
 | `0x0007` | `+ WrLvl + RxEn` | 28 | 165 | Writes per-lane write-leveling and receive-enable coarse/fine CSRs (`0x01000c/0d = 0x009a/0x009b`, `0x010026 = 0x00ba`, etc.) |
 | `0x000f` | `+ RdDQS` | 3,567 | 559 | **63% of total runtime (~3.54 s):** trains `CSR[0x4e]` and `CSR[0x4f]` across all 36 lanes (4 ranks × 9 lanes) and populates `RxClkDly_Margin` / `VrefDac_Margin` |
 | `0x001f` | `+ WrDq` | 4,413 | 598 | **~846 ms:** trains write DQ eye delays (`0x01<r><l>10..13`, `0x01<r><l>be`) and populates `TxDqDly_Margin`, `DeviceVref_Margin`, and trained `MR14`/`MR15` |
@@ -77,16 +77,102 @@ Note that running `SequenceCtrl = 0x0009` (`DevInit + RdDQS` only, skipping `WrL
 
 ### `DevInit` master clock-period calibration (`0x02xxxx`)
 
-During `DevInit` (`SequenceCtrl[0]`), the PMU measures the live clock period from two hardware period counters and programs five group `0x02` CSRs:
+Before invoking the master clock-period calibration routine during `DevInit` (`SequenceCtrl[0]`), three hardware preconditions must hold:
 
-1. Save `CSR[0x020011]` (`ARC 0x90040022`), clear bits `[6:5]` (`val & 0xff9f`), and write it back during calibration.
-2. Trigger the period measurement at `CSR[0x0200e3]` (`ARC 0x900401c6`), then read:
-   - CA period counter `T_ca = CSR[0x0300bf] & 0x01ff` (`ARC 0x9006017e`), stored to `CSR[0x02000a]` (`ARC 0x90040014`, typically `0x0190` = 400 at 6400 MT/s);
-   - DQ period counter `T_dq = CSR[0x0100e0] & 0x01ff` (`ARC 0x900201c0`), stored to `CSR[0x020017]` (`ARC 0x9004002e`, `0x0100` = 256).
-3. Compute `val = 2 * T_ca` (when `Pstate` parameter = 0, else `T_ca`) and classify `val` against five frequency thresholds (`0x014b`, `0x0213`, `0x031f` = 799, `0x0707`, `0x0897`) to select 4-bit `coarse`, `fine`, and `bucket3` codes:
-   - Write `(bucket3 << 12) | (fine << 8) | (fine << 4) | coarse` to `CSR[0x020012]` (`ARC 0x90040024`; on the reference board `val ≈ 800` sits on the `799` boundary, producing `0x3221` when `val <= 799` or `0x4332` when `val >= 800`);
-   - Write `(fine << 8) | coarse` to `CSR[0x020186]` and `CSR[0x020187]` (`ARC 0x9004030c`/`0x9004030e`, producing `0x0201` or `0x0302`).
-4. Restore the original `CSR[0x020011]` value (`0x0041`) before `DevInit` exits.
+1. **DPLL locked and DFI clock running** (configured by the host before releasing the PMU);
+2. **PHY block-enable and channel-release phases completed** (`CSR[0x0200a2]` and `CSR[0x0200f8]` asserted, and channel resets released; see Phase 1 and Phase 2 below);
+3. **`CSR[0x020011]` (`ARC 0x90040022`) bits `[6:5]` cleared**: The host pre-training table initializes `CSR[0x020011]` to **`0x006f`**. At the start of `DevInit` Phase 3, the PMU saves the original value (`0x006f`) to DMEM `0x8000042a` and writes `0x006f & 0xff9f = 0x000f` to `CSR[0x020011]` (`0x000f` is also the final value captured in post-training `phypara`).
+
+Once those preconditions hold, the PMU calibrates the clock period and frequency-bucket CSRs using the following sequence:
+
+1. **Enable period counters (`CSR[0x0200e3]` and `CSR[0x0200e5]`)**:
+   - Read and save `u_e3 = CSR[0x0200e3]` (`ARC 0x900401c6`), then write `CSR[0x0200e3] = u_e3 | 0x0c00` (setting **bits `[11:10]`**; writing `0x0001` does **not** enable the counters and leaves `0x0300bf` and `0x0100e0` at `0`).
+   - Read and save `u_e5 = CSR[0x0200e5]` (`ARC 0x900401ca`), then write `CSR[0x0200e5] = u_e5 & 0xffe0` (clearing bits `[4:0]`).
+2. **Wait for measurement accumulation**:
+   - Delay for a **fixed 10 hardware RTC ticks** (no busy bit is polled).
+3. **Read period counters and program `CSR[0x02000a]` and `CSR[0x020017]`**:
+   - Read CA period counter `T_ca = CSR[0x0300bf] & 0x01ff` (`ARC 0x9006017e`) and write `T_ca` to `CSR[0x02000a]` (`ARC 0x90040014`, typically `0x018f`–`0x0190` = 399–400 at 6400 MT/s).
+   - Read DQ period counter `T_dq = CSR[0x0100e0] & 0x01ff` (`ARC 0x900201c0`) and write `T_dq` to `CSR[0x020017]` (`ARC 0x9004002e`, `0x0100` = 256 at 6400 MT/s).
+4. **Restore counter control registers**:
+   - Write `CSR[0x0200e3] = u_e3` and `CSR[0x0200e5] = u_e5`.
+5. **Compute frequency bucket and program `CSR[0x020012]`, `CSR[0x020186]`, and `CSR[0x020187]`**:
+   - Compute `val = DRAMFreq / DfiFreqRatio` from message-block fields `DRAMFreq` (`0x80000006`, 16-bit) and `DfiFreqRatio` (`0x80000008`, 8-bit). If `DfiFreqRatio == 2` (`byte[0x008] == 2`), double `val = 2 * val` (note that this check tests `DfiFreqRatio == 2`, not `Pstate == 0`).
+   - Classify `val` across the six intervals defined by the five thresholds (`0x014b` = 331, `0x0213` = 531, `0x031f` = 799, `0x0707` = 1799, `0x0897` = 2199) to obtain `coarse` (bits `[7:4]`) and `fine` (bits `[3:0]` and `[11:8]`):
+
+     | Interval for `val` | `coarse` (`[7:4]`) | `fine` (`[3:0]`, `[11:8]`) |
+     |---|---:|---:|
+     | `val < 0x014b` (`< 331`) | `0x20` | `1` |
+     | `0x014b <= val <= 0x0213` (`331..531`) | `0x30` | `0` |
+     | `0x0213 < val <= 0x031f` (`532..799`) | `0x40` | `2` |
+     | `0x031f < val <= 0x0707` (`800..1799`) | `0x50` | `3` |
+     | `0x0707 < val <= 0x0897` (`1800..2199`) | `0x60` | `3` |
+     | `val > 0x0897` (`> 2199`) | `0x70` | `3` |
+
+   - Combine `coarse` and `fine` with the secondary period bucket `bucket3` (`2..7`, derived from the measured period counter; on the reference 6400 MT/s board `2 * T_ca ≈ 798..800` sits on the `799` boundary):
+     - Write `CSR[0x020012]` (`ARC 0x90040024`) = `(bucket3 << 12) | (fine << 8) | coarse | fine` (yielding `0x3221` when below the `799` threshold or `0x4332` when at/above `800`);
+     - Write `CSR[0x020186]` (`ARC 0x9004030c`) = `(bucket3 << 4) | fine` (yielding `0x0201` or `0x0302`);
+     - Copy `CSR[0x020187]` (`ARC 0x9004030e`) = `CSR[0x0100d5]` (`ARC 0x900201aa`, `0x0201` or `0x0302`).
+
+### Complete `DevInit` (`SequenceCtrl[0]`) hardware initialization sequence
+
+While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 changed `phypara` entries** (50 in group `0x01`—namely `0x01<r><l>50` and `0x51` across all 36 lanes plus `0x01<r>0a3` and `0x0100d5`—along with 16 in group `0x02` and `0x09080b`/`0x09080c`), the complete `DevInit` stage actually executes **507 CSR write operations** across six ordered hardware phases. Many of those writes target dynamic control, reset, and strobe registers outside the 69 `phypara` serialization segments.
+
+#### Configuration commit strobe triad (`0x020028`, `0x02f0a5`, `0x02f077`)
+
+Throughout `DevInit`, whenever the PMU updates a group of PHY control CSRs and needs to latch/commit the configuration into the hardware state machine, it issues this three-write strobe sequence (~40 times across `DevInit`):
+
+```text
+CSR[0x020028] = 1    (ARC 0x90040050 = 1)
+CSR[0x02f0a5] = 1    (ARC 0x9005e14a = 1)
+CSR[0x02f077] = 0    (ARC 0x9005e0ee = 0)
+```
+
+#### Ordered `DevInit` phases
+
+1. **Phase 1 — PHY block enable (`CSR[0x0200a2]` and `CSR[0x0200f8]`)**:
+   - Read-modify-write `CSR[0x0200a2]` (`ARC 0x90040144`) `|= 0x0100` (set bit 8).
+   - Read-modify-write `CSR[0x0200f8]` (`ARC 0x900401f0`) `|= 0x0001` (set bit 0).
+2. **Phase 2 — Channel release**:
+   - For each channel `ch = 0, 1`:
+     - Write `CSR[0x020028] = 1`, `CSR[0x02f077] = 0`, `CSR[0x02f0a0] = 0` (`ARC 0x9005e140`), and `CSR[0x020027] = 0x8000` (`ARC 0x9004004e`).
+     - Wait **23 hardware RTC ticks**.
+     - Write `CSR[0x02f0a0] = 1`, wait **23 RTC ticks**, and write `CSR[0x02f0a0] = 0`.
+3. **Phase 3 — Topology evaluation, `QBPll*` read-back, DQ block reset, and clock calibration**:
+   - Save `CSR[0x020011]` (`0x006f`) to DMEM `0x8000042a` and write `CSR[0x020011] &= 0xff9f` (`0x000f`).
+   - Clear `CSR[0x0000a4] = 0` (`ARC 0x90000148`).
+   - Write `CSR[0x020073]` (`ARC 0x900400e6`): `1` if `PllBypassEn != 0` (`0x80000005`), else `0`.
+   - Write `CSR[0x020072]` (`ARC 0x900400e4`): `(Pstate & 0x0f)` (`0x80000004`).
+   - Evaluate `CsPresentChA` (`0x80000025`) and `CsPresentChB` (`0x80000040`): if no ranks are populated on either channel, abort immediately through the fatal `0x000000ff` mailbox path.
+   - Write `CSR[0x02007a]` (`ARC 0x900400f4`) with the active channel mask (`1` for single-channel, `3` when both channels are populated) and `CSR[0x02007e]` (`ARC 0x900400fc`) with the rank-enable mask (`(CsPresentChB << 2) | CsPresentChA`, i.e. `0x000f` on dual-rank ChA+ChB).
+   - Write `CSR[0x0c0080] = 3` (`ARC 0x90180100`, enabling PMU/HCLK clocks).
+   - If `Pstate & 0x20` is non-zero, copy the seven `QBPll*` CSRs (`0x020088`–`0x02008c`, `0x02004a`–`0x02004c`) to message-block offsets `0x80000130`–`0x8000013c` (see [05-message-block.md](05-message-block.md)).
+   - Assert DQ block reset on the active channel selection (`CSR[0x01f00f] = 0` at `ARC 0x9003e01e`, `CSR[0x01f0d9] = 1` at `ARC 0x9003e1b2`), wait **10 RTC ticks**, then release (`CSR[0x01f0d9] = 0`, `CSR[0x01f00f] = 1`, `CSR[0x01f0ac] = 0x00ff` at `ARC 0x9003e158`).
+   - Execute the **master clock-period calibration** sequence above (`0x02000a`, `0x020017`, `0x020012`, `0x020186`, `0x020187`).
+   - Write `CSR[0x02008b] = 0` (`ARC 0x90040116`), `CSR[0x020049] = 1` (`ARC 0x90040092`), and `CSR[0x020061] = 2` (`ARC 0x900400c2`).
+4. **Phase 4 — Second-channel DQ block reset**:
+   - Switch `CSR[0x02007a] = 2` (Channel B selector) and repeat the DQ block reset pulse (`CSR[0x01f00f] = 0`, `CSR[0x01f0d9] = 1` → wait **10 RTC ticks** → `CSR[0x01f0d9] = 0`, `CSR[0x01f00f] = 1`, `CSR[0x01f0ac] = 0x00ff`), then restore `CSR[0x02007a] = 3` (both channels).
+5. **Phase 5 — DRAM reset (`MemResetL`) and LPDDR5 `tINIT` timing sequence**:
+   - Configure the PHY reset/timing control registers (`CSR[0x020078] = 0x8000` at `ARC 0x900400f0`, `CSR[0x020070]`/`0x020071` at `ARC 0x900400e0`/`0x900400e2`, `CSR[0x020053]` at `ARC 0x900400a6`, `CSR[0x0200e0]`–`0x0200e2` at `ARC 0x900401c0`–`0x900401c4`, `CSR[0x0200c3]` at `ARC 0x90040186`, `CSR[0x020020]` at `ARC 0x90040040`, and `CSR[0x02002a]` at `ARC 0x90040054`) and issue the commit strobe triad (`0x020028 = 1`, `0x02f0a5 = 1`, `0x02f077 = 0`).
+   - Sequence `MemResetL` at `CSR[0x020060]` (`ARC 0x900400c0`) across the LPDDR5 initialization intervals (`tINIT1` / `tINIT3` / `tINIT4` / `tINIT5`):
+     1. Write `CSR[0x020060] = 2` and wait **10 RTC ticks**;
+     2. Write `CSR[0x020060] = 0` (assert DRAM `RESET_n` low) and wait **200,000 scaled ticks** (`tINIT1` / `tINIT2`);
+     3. Write `CSR[0x020060] = 1` (deassert DRAM `RESET_n` high) and wait **2,000,000 scaled ticks** (`tINIT3`, ~2 ms);
+     4. Issue the commit strobe triad and wait **2,125 scaled ticks** (`tINIT5`).
+6. **Phase 6 — Clock-enable transition and per-lane DQ initialization**:
+   - Update `CSR[0x0c0080]` (`ARC 0x90180100`): write `2`, then `3`, and after per-lane setup write `7`.
+   - Save the four per-rank `CSR[0x01<r>0a3]` values (`0x0b33`, written by the host pre-training table) into DMEM `0x80000430`–`0x80000437` and program the per-lane `0x01<r><l>50`/`0x51` and `0x01f00a` (`ARC 0x9003e014`) initialization state.
+   - Update status register `CSR[0x0c0086]` (`ARC 0x9018010c`) from `1` to `3` upon `DevInit` completion.
+
+#### Summary of `DevInit`-written CSRs outside `phypara`
+
+The following CSRs are written by `DevInit` to sequence hardware state machines and resets, and are **not** part of the 5,170-entry `phypara` table:
+
+- **Group `0x00`**: `0x0000a4` (`ARC 0x90000148`);
+- **Group `0x01` broadcast (`0x01fxxx`)**: `0x01f00a` (`0x9003e014`), `0x01f00f` (`0x9003e01e`), `0x01f0ac` (`0x9003e158`), `0x01f0d9` (`0x9003e1b2`);
+- **Group `0x02` control/reset**: `0x020020`, `0x020027`, `0x020028`, `0x02002a`, `0x020042`, `0x020044`, `0x020049`, `0x020053`, `0x020060` (`MemResetL`), `0x020061`, `0x020070`–`0x020073`, `0x020078`, `0x02007a`, `0x02007e`, `0x02008b`, `0x0200a2`, `0x0200c3`, `0x0200e0`–`0x0200e2`, `0x0200f8`, `0x02011c` (`0x90040238` terminal status pulse), `0x020200`, `0x020303`, `0x02030d`, `0x020310`, `0x020311`, `0x020320`, `0x02f077`, `0x02f0a0`, `0x02f0a5`;
+- **Group `0x0c`**: `0x0c0080` (`UCCLK_HCLK_ENABLES`).
+
+By contrast, in the `0x0200c0`–`0x0200cf` range, `CSR[0x0200c3]` (`0x0001`), `CSR[0x0200c6]` (`0x0010`), `CSR[0x0200cd]` (`0x0001`), and `CSR[0x0200cf]` (`0x001f`) hold hardware power-on reset values that are never read by the PMU (`0x0200c5`, `0x0200c7`, `0x0200ca`, and `0x0200cc` are unimplemented and read as `0`). In groups `0x0c` and `0x0d`, the only registers accessed by the PMU outside the four mailbox registers are `CSR[0x0c0080]` (`ARC 0x90180100`) and `CSR[0x0c0086]` (`ARC 0x9018010c`); neither `CSR[0x0d0036]` nor P-state SRAM (`0x0a0000`) is accessed during `DevInit`.
 
 ## Candidate evaluation and eye construction
 

@@ -65,19 +65,29 @@ This low DMEM region is **live input and runtime state**, not zero-initialized s
 | Transient firmware/host scratch | `0x5f000`–`0x5f07f` | `0x8000e000`–`0x8000e0ff` | Read and cleared by host SPL; not persistent across phases |
 | Initial stack top | `0x60000` | `0x80010000` | Grows downward |
 
-Within `0x80000400`–`0x800004ff` (relative to `gp = 0x80000400`), the PMU firmware reads and writes the following specific runtime state offsets during `DevInit` and subsequent stages:
+Within `0x80000400`–`0x80000e4e` (relative to `gp = 0x80000400`, where `0x80000400`–`0x800009a3` / host DPHY `0x58200`–`0x584d1` is pre-loaded by the host SPL pre-training table), the PMU firmware reads and writes the following specific configuration tables, canaries, and runtime state offsets during `DevInit` and subsequent stages:
 
-| ARC DMEM Address | Width | Role during PMU execution |
-|---:|---|---|
-| `0x80000404` | 8-bit | Short-delay clock shift (`1 & ~(CSR[0x0c0080] >> 2)`: `1` when `0x0c0080 == 3`, `0` when `0x0c0080 == 7`) used by `delay(n)` to compute `scaled = (n + 1) >> shift` |
-| `0x8000042a` | 16-bit | Saved pre-training value of `CSR[0x020011]` (`0x006f`) before masking bits `[6:5]` to `0x000f` |
-| `0x8000042c` | 16-bit | Stage execution progress bitmask (`\|= 1`, `\|= 2`, `\|= 4`, `\|= 8`) |
-| `0x80000430`–`0x80000437` | 4 × 16-bit | Saved per-rank values of `CSR[0x01<r>0a3]` (`0x0b33` for `r = 0..3`) |
-| `0x80000438`, `0x8000043a` | 16-bit | Saved state words during `DevInit` |
-| `0x80000458`, `0x8000045a`, `0x8000045e` | 16-bit | ACSM halfword write cursor (`0x80000458` and `0x8000045e`) and NOP cycle-count divisor (`0x8000045a = 4`; a 32-bit store to `0x80000458` clobbers `0x8000045a` and breaks ACSM delay loops) |
-| `0x8000045b`–`0x8000046c` | 8/16-bit | Per-channel / per-rank mode and configuration scratch bytes/halfwords |
-| `0x8000047c`, `0x8000047e` | 16-bit | Saved state words during `DevInit` |
-| `0x800004a8`, `0x800004b0`, `0x800004bc`, `0x800004cc`, `0x800004de`, `0x800004f4` | 16-bit | Sub-table descriptors and stage scratch words |
+| ARC DMEM Address | Host DPHY Index | Width | Pre-loaded value | Role during PMU execution |
+|---:|---:|---|---|---|
+| `0x80000403` | `0x58201` (hi) | 8-bit | `0x00` | Mode / revision selector byte (`== 0`, `< 2`, `2..3`, or `>= 4`) |
+| `0x80000404` | `0x58202` (lo) | 8-bit | `0x00` | RTC clock shift (`1 & ~(CSR[0x0c0080] >> 2)`: `1` when `0x0c0080 == 3`, `0` when `0x0c0080 == 7`) used by `delay_dfi_clks(n)` to compute `rtc_ticks = (n + 1) >> shift` |
+| `0x80000408` | `0x58204` | 16-bit | `0x0500` | Pre-loaded configuration word (`[gp, 8]`) |
+| `0x8000040c` | `0x58206` | 16-bit | `0x0000` (set to `4`) | Active rank count (`[gp, 12]`) used as loop bound for per-rank CSR masks (`0x01<r>0a3 &= 0x000c`) |
+| `0x8000041c` | `0x5820e` | 32-bit | `0x00000000` | P-state / channel offset (`[gp, 28]`) |
+| **`0x80000424`, `0x80000426`** | **`0x58212`, `0x58213`** | **2 × 16-bit** | **`0x6745`, `0x00f2`** | **Mandatory 32-bit PHY signature canary (`0x00f26745`, `[gp, 36]`/`[gp, 38]`)**: verified at PMU startup against `CSR[0x09002e]`/`0x09002f` (`0x9012005c`/`0x9012005e`); if missing or zeroed, the PMU aborts immediately with fatal `0x000000ff` |
+| `0x8000042a` | `0x58215` | 16-bit | `0x0000` | Saved pre-training value of `CSR[0x020011]` (`0x006f`) before masking bits `[6:5]` to `0x000f` |
+| `0x8000042c` | `0x58216` | 16-bit | `0x0000` | Stage execution progress bitmask (`\|= 1`, `\|= 2`, `\|= 4`, `\|= 8`) |
+| `0x80000430`–`0x80000437` | `0x58218`–`0x5821b` | 4 × 16-bit | `0x0000` | Saved per-rank values of `CSR[0x01<r>0a3]` (`0x0b33` for `r = 0..3`, saved in `Step 3.3` and restored in `Step 6.3`) |
+| `0x80000438`, `0x8000043a` | `0x5821c`, `0x5821d` | 16-bit | `0x0000`, `0x0004` | Saved state word (`0x438`) and pre-loaded loop divisor (`0x43a = 4`) |
+| `0x80000458`, `0x8000045a`, `0x8000045e` | `0x5822c`, `0x5822d`, `0x5822f` | 16-bit | `0x0000`, `0x0004`, `0x0000` | ACSM halfword write cursor (`0x80000458` and `0x8000045e`) and NOP cycle-count divisor (`0x8000045a = 4`; a 32-bit store to `0x80000458` clobbers `0x8000045a` and breaks ACSM delay loops) |
+| `0x8000045b`–`0x80000495` | `0x5822d`–`0x5824a` | 8/16-bit | Pre-loaded tables | Per-channel / per-rank mode scratch and pre-loaded lane/byte lookup tables (`0x8000047e` supplies the initial `CSR[0x020023]` value during `CSR[0x020031] = 1` ACSM enable) |
+| **`0x800004cc`–`0x800004dd`** | **`0x58266`–`0x5826e`** | **3 × 6 bytes** | **3 CSR descriptors** | Three 6-byte `[uint32_t csr_idx, uint16_t val]` descriptors applied at `Step 3.1`: **`CSR[0x02006e] = 0x0001`**, **`CSR[0x070060] = 0x0000`**, **`CSR[0x070011] = 0x0000`** |
+| `0x800004de`–`0x800009a3` | `0x5826f`–`0x584d1` | 8/16-bit | Pre-loaded tables | Sub-table descriptors (`0x4de`, `0x4f4`) and frequency-indexed PHY timing/configuration tables (`0x510`–`0x9a3`) |
+| `0x800009a8`+ | `0x584d4`+ | 16-bit array | `0x0000` | ACSM instruction staging buffer in DMEM (copied into `0x90082000` ACSM SRAM) |
+| `0x80000a80` | `0x58540` (lo) | 8-bit | `0x00` (set to `1`) | Cycle-multiplier enable flag set to `1` at PMU startup; scales `min_clks` in `delay_ps_or_clks(ps, min_clks)` by `byte[0x80000b68] * byte[0x80000b69]` (`32×`) |
+| `0x80000b68`, `0x80000b69` | `0x585b4` | 2 × 8-bit | `0x00`, `0x00` (set to `8`, `4`) | Frequency-derived multiplier `byte[0x80000b68] = (DRAMFreq + DfiFreqRatio * 220 - 1) / (DfiFreqRatio * 220)` (`8` at 6400/4, written as `0x0108` to `CSR[0x020042]`) and constant `byte[0x80000b69] = 4` |
+| `0x80000b6a`–`0x80000b71` | `0x585b5`–`0x585b8` | 8 × 8-bit | `0x00` | Active channel and rank bounds (`0x80000b6e..0x80000b6f` for ChA first/last rank; `0x80000b70..0x80000b71` for ChB first/last rank) |
+| `0x80000e4c`, `0x80000e4e` | `0x58726`, `0x58727` | 2 × 16-bit | `0x0000` | Saved state words during post-`DevInit` stage transitions |
 
 If a C startup routine places `.bss` at `0x80000400` and zeros it on boot, it wipes the SPL-supplied parameter tables before training begins, causing immediate training failure. Furthermore, if the compiler uses the hardware `gp` register (`r26`) for its own small-data section (`.sdata`/`.sbss`), that compiler `gp` must point to the firmware's own data region rather than colliding with the `0x80000400` parameter table.
 
@@ -138,9 +148,12 @@ The PMU implements ARCv2 auxiliary registers accessed exclusively via **`lr` (lo
 
 ### Hardware timer polling
 
-Hardware delays use the 64-bit RTC counter across AUX `0x103`–`0x105`: check `0x103` (if not enabled, write `2` then `1` to `0x103`), read `0x104` (low) and `0x105` (high), and poll until the target count delta elapses while accounting for 32-bit rollover from `0x104` into `0x105`. Modeling `0x103`–`0x105` as memory-mapped addresses causes delay loops to hang indefinitely.
+Hardware delays use the 64-bit RTC counter across AUX `0x103`–`0x105` (running at **`400 MHz` = `2.5 ns/tick`**) through two entry points (see [07-training-behavior.md](07-training-behavior.md)):
 
-For very short delays where the scaled tick count is `< 16`, a single dummy 16-bit read from `0x90040048` (`CSR[0x020024]`) per loop iteration provides deterministic sub-RTC peripheral bus pacing without RTC counter setup overhead.
+1. **`delay_dfi_clks(n)`**: takes `n` in DFI clock cycles (`800 MHz` = `1.25 ns/cycle` at 6400 MT/s with `DfiFreqRatio = 4`) and computes `rtc_ticks = (n + 1) >> byte[0x80000404]` (`byte[0x80000404] = 1 & ~(CSR[0x0c0080] >> 2)` = `1` when `0x0c0080 == 3`).
+   - When `rtc_ticks < 16` (`0x10`), performs a single dummy 16-bit read from `0x90040048` (`CSR[0x020024]`) and returns immediately without touching the RTC.
+   - When `rtc_ticks >= 16`, checks `AUX 0x103` (if bit 0 is `0`, writes `2` then `1` to `0x103`), reads `0x104` (low) and `0x105` (high), and polls until **`rtc_ticks` raw 400 MHz RTC ticks** (`1` tick per scaled unit) elapse while accounting for 32-bit rollover from `0x104` into `0x105`. Modeling `0x103`–`0x105` as memory-mapped addresses causes delay loops to hang indefinitely.
+2. **`delay_ps_or_clks(ps, min_clks)`**: converts `ps` (**time in picoseconds**) into DFI clock cycles `dfi_clks = (((ps * DRAMFreq) / 2,000,000) + DfiFreqRatio + 1) / DfiFreqRatio`, computes the cycle floor `c = min_clks * byte[0x80000b68] * byte[0x80000b69]` (`32 * min_clks` when `byte[0x80000a80] == 1`, or `min_clks + 1` otherwise), and calls `delay_dfi_clks(max(dfi_clks, c))`.
 
 ## Observed: arithmetic instructions and `libgcc` constraints
 

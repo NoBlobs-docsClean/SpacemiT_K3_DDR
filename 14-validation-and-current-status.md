@@ -138,12 +138,12 @@ Inside the 5,170-entry `phypara` dump, the live period-counter register and hard
 | CSR index | ARC address | Reference pre → post (`0x125f` / `0x0001`) | Reason |
 |---:|---:|---|---|
 | `0x02000a` | `0x90040014` | `0x0040` → `0x0082` (`130`) / `0x0086` (`134`) | Live CA period counter (`CSR[0x0300bf] & 0x01ff`) latched by the `CSR[0x0200e3]` bit 10 falling edge during `DevInit` (`±1..4` tick variation) |
-| `0x020012` | `0x90040024` | `0xa1a1` → `0x7353` | Deterministic frequency bucket computed from `DRAMFreq` (`6400`) and `DfiFreqRatio` (`4`) |
+| `0x020012` | `0x90040024` | `0xa1a1` → `0x7353` | Deterministic frequency bucket computed from `DRAMFreq` (`6400`) and `DfiFreqRatio` (`4`) (`f = 1600`, `f_hi = 9600`; note that `0x3221`/`0x4332` only occurs if a custom trainer mistakenly classifies `2 * T_ca` instead of `DRAMFreq / DfiFreqRatio`) |
 | `0x020186` | `0x9004030c` | `0x00a1` → `0x0073` | Secondary frequency bucket `(bucket3 << 4) \| fine_hi` computed from `DRAMFreq` and `DfiFreqRatio` |
-| `0x020187` | `0x9004030e` | `0x0040` → `0x0041` | Copied unmasked from rank-0 `CSR[0x0100d5]` (`ARC 0x900201aa`) during `DevInit` |
-| `0x09080b` | `0x90121016` | `0x002f` → `0x000f` (or `0x0015`/`0x00ff`) | ACSM/sequencer hardware state |
-| `0x09080c` | `0x90121018` | `0x006f` → `0x000f` (or `0x002d`/`0x0065`) | ACSM/sequencer hardware state |
-| `0x0c0086` | `0x9018010c` | `0x0000` → `0x0002` (`0x125f`) / `0x0003` (`0x0001`) | Sticky PHY/microcontroller status bits (`1` during PMU execution, `3` after `DevInit`, `2` after full training) |
+| `0x020187` | `0x9004030e` | `0x0040` → `0x0041` | Copied unmasked from rank-0 read-only hardware register `CSR[0x0100d5]` (`ARC 0x900201aa`) during `DevInit` |
+| `0x09080b` | `0x90121016` | `0x002f` → `0x000f` (or `0x0015`/`0x00ff`) | Masked `& 0xff9f` alongside ACSM clock setup at `CSR[0x090808]` (`0x90121010 + 6`) |
+| `0x09080c` | `0x90121018` | `0x006f` → `0x000f` (or `0x002d`/`0x0065`) | Masked `& 0xff9f` alongside ACSM clock setup at `CSR[0x090808]` (`0x90121010 + 8`) |
+| `0x0c0086` | `0x9018010c` | `0x0000` → `0x0002` (`0x125f`) / `0x0003` (`0x0001`) | Sticky PHY/microcontroller hardware status bits (`1` during PMU execution, `3` after `DevInit`, `2` after full training; 0 references in PMU firmware) |
 
 ### Diagnostic failure signatures
 
@@ -152,12 +152,14 @@ When bringing up new PMU firmware or host table overrides, use the following sym
 | Observed symptom | Typical duration | Root cause |
 |---|---:|---|
 | PMU hangs silently (no `0x07` or `0xff`; USB FDL gadget wedged on reset) | Timeout | Instruction referenced `r16`–`r25` (missing `-mrf16` at compile or link), unaligned 32-bit `ld` on a 6-byte table stride, 32-bit `ld`/`st` on a 16-bit `0x90xxxxxx` CSR, AUX `0x103`–`0x105` accessed as memory instead of `lr`/`sr`, or `libgcc` `__muldi3`/`__udivsi3` invoked |
-| PMU emits fatal `0x000000ff` early (`DDR training failed!`) | **12–41 ms** | Invalid electrical configuration (`TX DS >= 60 Ω` or `OFF`), `.bss` linked at `0x80000400` (wiping host-supplied `phypara` / runtime state during startup), or `CsPresent`/`EnabledDQs` mismatch |
+| PMU emits fatal `0x000000ff` early (`DDR training failed!`) | **12–41 ms** | Invalid electrical configuration (`TX DS >= 60 Ω` or `OFF`), `.bss` linked at `0x80000400` (wiping host-supplied `phypara` / canary `0x80000424`/`0x426`), or `CsPresent`/`EnabledDQs` mismatch |
 | PMU emits `0x07` far too fast (`DDR training consume 5 ms`–`28 ms`) | **5–28 ms** | 32-bit store to `0x80000458` clobbered delay divisor `0x8000045a`, or `SequenceCtrl` stage mask lacked `RdDQS` (`bit 3`) / `WrDq` (`bit 4`) / `DRAM DCA` (`bit 6`) |
 | Late host message-block override (`SequenceCtrl`, `HdtCtrl`, `Train2DMisc`) has no effect | Normal (~5.6 s) | Host wrote `DPHY_BASE + 4 * 0x58000` *after* the pre-training phase closed (immediately before `pwrctl` bit 11); hardware discards those writes |
 | Mailbox streaming takes 5–7 minutes with `Train2DMisc[0] = 1` | **>300 s** | Host receiver printed a fixed 15/16-word buffer per frame over 115200 bps UART instead of printing only `len + 1` words |
 | `CSR[0x01<r><l>4e]` stays at `0x0035` after training | Variable | `RdDQS` (`SequenceCtrl[3]`) did not run, or `DisableTrainingLoop[1]` (`0x80000102 & 2`) was inadvertently set, averaging `0x4e` with `0x50` (`0x0035`) |
-| `CSR[0x0300bf]` and `CSR[0x0100e0]` read `0x0240` (`CSR[0x02000a]` stays at `0x0040`) or `CSR[0x020011]` stays at `0x006f` | ~15 ms+ | Period-counter strobe omitted the **falling edge on bit 10 of `CSR[0x0200e3]`** (`0x0800 -> 0x0c00 -> delay(10) -> 0x0800` after `CSR[0x0200e5] &= ~0x001f`), leaving `0x0300bf & 0x01ff` at the unlatched pre-training value `0x0040` instead of `0x0082`–`0x0086`, or missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the strobe |
+| `CSR[0x0300bf]` and `CSR[0x0100e0]` read `0x0240` (`CSR[0x02000a]` stays at `0x0040`) or `CSR[0x020011]` stays at `0x006f` | ~15 ms+ | Period-counter strobe omitted the **falling edge on bit 10 of `CSR[0x0200e3]`** (`0x0800 -> 0x0c00 -> delay_dfi_clks(10) -> 0x0800` after `CSR[0x0200e5] &= ~0x001f`), leaving `0x0300bf & 0x01ff` at the unlatched pre-training value `0x0040` instead of `0x0082`–`0x0086`, or missing `volatile` on `0x9004xxxx` accesses caused the compiler to optimize out the strobe |
+| `CSR[0x0300bf]` and `CSR[0x0100e0]` saturate at **`0x17ff`** (`CSR[0x02000a] = 0x01ff = 511`) and `CSR[0x0100d5]` stays at `0x019a`–`0x01bf` (`410`–`447`) instead of `0x0041` (`65`) | ~15 ms+ | Counter latched, but the PHY PLL / target clock was stopped or unstable during measurement: verify that the 3-entry descriptor table at `0x800004cc` (`CSR[0x02006e] = 1`, `0x070060 = 0`, `0x070011 = 0`) was applied, `Step 3.5.12` waited the full **`400 µs` (`160,000` RTC ticks)** (`delay_ps_or_clks(0, 10000)` with `byte[0x80000a80] == 1`, `byte[0x80000b68] == 8`, `byte[0x80000b69] == 4`) rather than `12.5 µs` (`5,000` ticks), and `Step 3.6` per-rank DQ calibration executed before `Step 3.7` |
+| `CSR[0x020021]` reads `1` (busy) and times out (`25,000` iterations) during `Step 6.1`/`6.2` ACSM execution | ~15 ms+ | ACSM sequencer enable `CSR[0x020031]` (`ARC 0x90040062`) and ACSM clock dividers `CSR[0x090808]` / `CSR[0x090813]` were not initialized before starting `CSR[0x020020] = 1`, or the PHY PLL clock (`CSR[0x0200a2] = 2`) was not stable |
 
 ## Safe bench observation policy
 

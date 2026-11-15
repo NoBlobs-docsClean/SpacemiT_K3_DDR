@@ -17,8 +17,10 @@ Several questions that were open in early hardware bring-up are now **fully reso
 
 1. **Second DDR controller base address (Resolved)**: The K3 SoC exposes two complete controller instances: Instance 0 at `DDRC = 0xcb000000`, `CFG = 0xcb600000`, `DPHY = 0xcb800000` and Instance 1 at `DDRC = 0xcc000000`, `CFG = 0xcc600000`, `DPHY = 0xcc800000` (see [02-addressing-and-access.md](02-addressing-and-access.md)).
 2. **Exact `phypara` serialization order and segment start offsets (Resolved)**: The 5170 halfwords collected after training and restored during quickboot follow the exact 69-segment table documented in [appendix-phypara-order.md](appendix-phypara-order.md), including the non-zero starting offsets on sequential segments 48 (`start_offset = 46`), 54 (`292`), and 55 (`395`), yielding 5,170 unique CSR indices.
-3. **Per-stage CSR write attribution and `DevInit` vs. full-training diff (Resolved)**: `SequenceCtrl` stage sweeps (`0x0000` through `0x125f`) established the exact runtime and CSR footprint of every training stage, the origin classification of all 5,170 `phypara` entries (including the 107 `CHANGED` entries and 72 `CSR[0x4e]`/`CSR[0x4f]` read-eye centers), and the `DevInit` group `0x02` clock-period calibration sequence (see [07-training-behavior.md](07-training-behavior.md) and [09-training-results.md](09-training-results.md)).
+3. **Per-stage CSR write attribution and `DevInit` vs. full-training diff (Resolved)**: `SequenceCtrl` stage sweeps (`0x0000` through `0x125f`) established the exact runtime and CSR footprint of every training stage, the origin classification of all 5,170 `phypara` entries (including the 107 `CHANGED` entries and 72 `CSR[0x4e]`/`CSR[0x4f]` read-eye centers), the two-tier `delay_dfi_clks` / `delay_ps_or_clks` timing model, the `DevInit` group `0x02` clock-period calibration and frequency-bucket formula (`DRAMFreq / DfiFreqRatio` → `0x7353` / `0x0073`), the `CSR[0x020031]` ACSM sequencer enable, and the `0x80000400`–`0x80000e4e` DMEM parameter layout (see [07-training-behavior.md](07-training-behavior.md), [09-training-results.md](09-training-results.md), and [12-arc-execution-environment.md](12-arc-execution-environment.md)).
 4. **2D eye contour streaming format (`0x0076` / `0x0077`) and PHY ODT/drive response curves (Resolved)**: Enabling `Train2DMisc[0] = 1` with `HdtCtrl = 0x05` streams 1,296 2D eye contours (`0x00760004` header + 64× `0x00770003` row slices), and sweeping PHY TX drive strength (`0x01<r>040`) and RX ODT (`0x01<r>048`) established the pass/fail step function (`<= 40 Ω`) and monotonic eye-width curve (`42` to `106` taps; see [04-parts-topologies-and-timings.md](04-parts-topologies-and-timings.md)).
+5. **PHY hardware signature canary (`0x00f26745`) and `PmuRevision = 0x2409` (Resolved)**: At startup, the PMU writes `PmuRevision = 0x2409` to `0x80000002`, writes the 32-bit signature canary `0x00f26745` (`0x6745`, `0x00f2`) to `CSR[0x09002e]`/`0x09002f` (`ARC 0x9012005c`/`0x9012005e`), and verifies that they match the host-supplied values at DMEM `0x80000424` (`0x6745`) and `0x80000426` (`0x00f2`), aborting with `0x000000ff` on mismatch (see [07-training-behavior.md](07-training-behavior.md) and [12-arc-execution-environment.md](12-arc-execution-environment.md)).
+6. **Absence of LPDDR5 `MRR` readback in the PMU firmware (Resolved)**: The PMU firmware never issues LPDDR5 Mode Register Reads (`MRR`) and contains no `MRR` readback CSR path; all mode-register interactions use `MRW` and `MPC` bursts through the ACSM sequencer.
 
 ---
 
@@ -34,7 +36,7 @@ The streaming wire framing (`header = (id << 16) | len` followed by `len` 32-bit
 
 ### 3. Major stage byte to training-phase mapping
 
-A full-training capture emits the major message sequence `0d 00 01 02 fd 06 01 02 fd 04 03 09 07`. Aside from `0x07` (normal completion), `0x08` (streaming introducer), and `0x000000ff` (fatal error), the exact one-to-one mapping between intermediate stage codes (such as `0x0d`, `0xfd`, `0x06`, `0x04`, `0x03`, `0x09`) and `SequenceCtrl` algorithm steps is not confirmed.
+A full-training capture emits the major message sequence `0d 00 01 02 fd 06 01 02 fd 04 03 09 07`. While the high-level milestone grouping (`0x0d` entry, `0x00 0x01 0x02 0xfd` initial pass, `0x06 0x01 0x02 0xfd` retraining pass, `0x04 0x03 0x09` eye/DCA/CA optimization, `0x07` completion) is documented in [08-mailbox-and-streaming.md](08-mailbox-and-streaming.md), the intermediate stage codes are passed dynamically at runtime and should be treated as informational progress items.
 
 ---
 
@@ -60,27 +62,17 @@ The message block supports `Pstate` selection and a 15-P-state DMA mode (`Pstate
 
 ## Unresolved hardware questions
 
-### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) specialized training patterns and `MRR` readback path
+### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) specialized non-`MRW` training pattern encoding
 
-The Address/Command State Machine (ACSM) SRAM (`0x41000`–`0x41fff`, `ARC 0x90082000`–`0x90083ffe`), its group `0x02` sequencer control registers (`CSR[0x020020]`–`0x020027`, `ARC 0x90040040`–`0x9004004e`), and the 4-halfword instruction format used to issue LPDDR5 mode-register writes (`MRW-1` / `MRW-2`, such as `0xc9d8`/`0xc808` for `MR19 = 0x10`) and NOP delays (`0x2b00`) are now documented in [07-training-behavior.md](07-training-behavior.md).
+The Address/Command State Machine (ACSM) SRAM (`0x41000`–`0x41fff`, `ARC 0x90082000`–`0x90083ffe`), its group `0x02` sequencer control and enable registers (`CSR[0x020020]`–`0x020031`, `ARC 0x90040040`–`0x90040062`), its clock dividers (`CSR[0x090808]`, `CSR[0x090813]`, and `& 0xff9f` masks on `CSR[0x09080b]`/`0x09080c`), and the 4-halfword instruction format used to issue LPDDR5 mode-register writes (`MRW-1` / `MRW-2`, such as `0xc9d8`/`0xc808` for `MR19 = 0x10`) and NOP delays (`0x2b00`) are documented in [07-training-behavior.md](07-training-behavior.md).
 
-Remaining open details within the ACSM subsystem include:
-
-- the exact CSR capture registers from which the PMU reads back data returned by an LPDDR5 mode-register read (`MRR`); and
-- the bit-level encoding of specialized non-`MRW` training pattern instructions (such as continuous read/write burst loops loaded into higher ACSM instruction slots during `RdDQS`, `WrDq`, and `DRAM DCA`).
+The remaining open detail within the ACSM subsystem is the bit-level encoding of specialized non-`MRW` training pattern instructions (such as continuous read/write burst loops staged through DMEM `0x800009a8` into higher ACSM instruction slots during `RdDQS`, `WrDq`, and `DRAM DCA`). Note that if an independent trainer wishes to read LPDDR5 mode registers (`MR5`–`MR8`) via `MRR`, that requires defining a new host/ACSM `MRR` sequence, as the reference PMU firmware never performs `MRR`.
 
 ### 9. Bit-level definitions of internal PHY CSRs and physical lane-to-DQ mapping
 
-While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, the per-stage CSR write footprints, and the power-on reset nature of mirror group `0x110000` (`ARC 0x90220000`, never written by host tables or PMU firmware) are known, several hardware-level questions remain open:
+While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, the per-stage CSR write footprints, and the power-on reset nature of mirror group `0x110000` (`ARC 0x90220000`, never written by host tables or PMU firmware) are known, the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`) remains open.
 
-- the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`); and
-- the internal hardware mechanism that updates `CSR[0x09080b]` and `CSR[0x09080c]` during training.
-
-### 10. Expected PHY hardware signature/version value
-
-The PMU firmware checks a hardware signature/version register early in execution and aborts on mismatch, and writes `PmuRevision` (`0x002`) to the message block. The complete table of accepted silicon revision codes is not cataloged.
-
-### 11. Temperature derating curves and 4800 MT/s hardware validation
+### 10. Temperature derating curves and 4800 MT/s hardware validation
 
 DDRC derating registers (`0x00b04`–`0x00b08`, `0x10104`–`0x10108`) and 4800 MT/s clock/timing tables exist in the interface, but hardware validation in this study was performed at 6400 MT/s under ambient bench temperature.
 

@@ -85,7 +85,17 @@ A full-training capture on two controllers produced these 22 major bytes, includ
 0d 00 01 02 fd 06 01 02 fd
 ```
 
-The second controller's capture ended in the truncation shown; it does not establish that completion is optional. Exact meanings of stage bytes and `0xfd` are not confirmed. A consumer should handle unknown major codes as progress items, not as fatal errors solely because they are unknown.
+On a complete 13-byte controller run (`0d 00 01 02 fd 06 01 02 fd 04 03 09 07`), the major bytes follow a consistent milestone pattern across the enabled `SequenceCtrl = 0x125f` stages:
+
+| Sequence slice | Observed role in the training flow |
+|---|---|
+| `0x0d` | Initial training framework / `DevInit` entry |
+| `0x00`, `0x01`, `0x02`, `0xfd` | First leveling and receive-gate pass (`WrLvl` / `RxEn` / initial DQ setup; `0xfd` marks the end of the sub-loop pass) |
+| `0x06`, `0x01`, `0x02`, `0xfd` | Retraining / refinement pass across `RxEn` and write leveling (`DisableTrainingLoop == 0`) |
+| `0x04`, `0x03`, `0x09` | Final read/write 2D eye optimization (`RdDQS`, `WrDq`), `DRAM DCA`, `MxRdLat`, and `LPCA` stages |
+| `0x07` | Normal training completion |
+
+The second controller's capture ended in the truncation shown because the host trace buffer stopped after 22 major bytes; it does not establish that completion is optional. Because major stage bytes (other than `0x07`, `0x08`, and `0x000000ff`) are emitted with variable runtime stage numbers, a host consumer must treat all non-terminal major codes as informational progress items rather than branching on specific intermediate byte values.
 
 The PMU normal-completion path emits `0x07` and then remains stopped. Its fatal path emits `0xff` and remains in a terminal break/loop. Completion and error also cause different PMU-side PHY control pulses at ARC CSR `0x90040238` (normal completion pulses `1 -> 0`; fatal error pulses `4 -> 0`), reinforcing that `0xff` is terminal rather than an ordinary item requiring the host to continue.
 

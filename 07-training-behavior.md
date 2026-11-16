@@ -42,21 +42,20 @@ The main adjustable dimensions are:
 
 Tap-to-time and DAC-code-to-voltage conversions are PHY/DRAM-specific and are not established by this specification.
 
-## Dependency model
+## Dependency model and execution order
 
-The following is a **functional dependency order**, not a claim that bit numbers or every observed major-message ID directly encode execution order.
+In full training, the PMU firmware dispatches enabled stages in bit-aligned passes with conditional retraining and 2D refinement loops:
 
-1. **Device/PHY initialization (`SequenceCtrl[0]`)** establishes reset, clocking, basic MR state, and a working command interface. All later stages depend on it.
-2. **Write leveling (`[1]`)** establishes coarse WCK/CK and per-lane write timing. Reliable subsequent write-based tests depend on it.
-3. **Read gate / receive enable (`[2]`)** finds a usable read-data capture window.
-4. **Read DQS (`[3]`)** refines read sampling; read-eye/VREF optimization depends on a working gate/strobe.
-5. **Write DQ (`[4]`)** refines the write eye after basic write alignment and a usable readback/test mechanism exist.
-6. **DCA (`[6]`, `[7]`, `[8]`)** refines duty cycle in the DRAM and PHY. These stages consume already functional read/write paths and can change the timing results that later stages use.
-7. **Maximum read latency (`[9]`)** measures the passing DFI latency and adds `DFIMRLMargin`; it depends on functional read training.
-8. **DRAM TX DFE (`[10]`)** optimizes the DRAM transmit path and therefore depends on an operational read path. Later read-margin evaluation must use the final DFE setting.
-9. **CA/CS (`[12]`)** requires a functioning command interface and may include CA VREF and LPDDR5 CS training. The exact placement of every CA/CS substep relative to all DQ/DCA substeps is not established by the available evidence.
+1. **Device/PHY initialization (`SequenceCtrl[0]`, `0x0001`)** establishes reset, clocking, basic MR state, and a working command interface. All later stages depend on it. If `SequenceCtrl[12]` (`LPCA`, `0x1000`) is set, CA/CS group `0x03` configuration runs inside the `DevInit` tail before final mode-register updates.
+2. **Write leveling (`SequenceCtrl[1]`, `0x0002`)** sweeps per-(dbyte, rank) transmit timing in lane broadcast to align WCK/CK.
+3. **Read gate / receive enable (`SequenceCtrl[2]`, `0x0004`)** finds the read-data capture gate window and commits per-rank/per-lane gate delays.
+4. **Read DQS 1D (`SequenceCtrl[3]`, `0x0008`)** refines 1D read timing (`CSR[0x01<r><l>4e/4f]`). (Note: `SequenceCtrl = 0x0008` is `RdDQS` alone; `0x0009` enables `DevInit + RdDQS`.)
+5. **DRAM DCA (`SequenceCtrl[6]`, `0x0040`), PHY Read DCA (`SequenceCtrl[7]`, `0x0080`), and DRAM TX DFE (`SequenceCtrl[10]`, `0x0400`)** run sequentially. Unless suppressed by `DisableTrainingLoop` (`byte[0x80000102]`: bit 0 suppresses all post-bit-6 retraining; bits `3`, `4`, `5` individually suppress `WrLvl`, `RxEn`, `RdDQS 1D`; bit `1` suppresses post-bit-7 `RdDQS 1D`), each completed DCA stage triggers retraining of earlier read/leveling stages.
+6. **Write DQ 1D (`SequenceCtrl[4]`, `0x0010`) and PHY Write DCA (`SequenceCtrl[8]`, `0x0100`)** refine write DQ eyes and transmit duty cycle; `DisableTrainingLoop` bit `2` controls post-bit-8 `WrDq` retraining. When `SequenceCtrl[4] == 0` and `SequenceCtrl != 1`, a non-sweeping fallback derives default `WrDq` delays from the `WrLvl` result (`+0x20`).
+7. **2D refinement (`WrDq 2D` under `SequenceCtrl[4]`, then `RdDQS 2D` under `SequenceCtrl[3]`)** executes two-pass 2D delay/VREF optimization (unless disabled by `Disable2D`), computing eye centroids and accumulating minimum vertical/horizontal margins.
+8. **Maximum read latency (`SequenceCtrl[9]`, `0x0200`)** measures and sets the DFI read latency path (`DFIMRLMargin` safety increment).
 
-The firmware also contains retraining loops. `DisableTrainingLoop` can suppress loops involving write leveling, read gate/read-DQ calibration, and write training. Consequently, a one-pass dependency graph is insufficient as an execution trace: later calibration may revisit earlier stages. A replacement should iterate only with explicit bounds and convergence checks.
+Consequently, a simple one-pass dependency graph is not a complete execution trace: DCA/DFE stages revisit earlier timing loops unless gated by `DisableTrainingLoop`, and a replacement should bound retraining iterations explicitly.
 
 ### Measured per-stage execution time and CSR footprint (`SequenceCtrl` sweep)
 
@@ -476,6 +475,18 @@ All DRAM mode-register writes (`MRW`), multi-purpose commands (`MPC`), and inter
      | `120..127` | `48d8 ...` / `5748 ...` | `MR17_A0 = 0xae` (`0x82`) | `cs = 1` (rank 0), **`MR17 = 0xae`** (`MA = 0x11`, `OP = 0xae`) |
      | `136..143` | `88d8 ...` / `9748 ...` | `MR17_A1 = 0xae` (`0x83`) | `cs = 2` (rank 1), **`MR17 = 0xae`** (`MA = 0x11`, `OP = 0xae`) |
 
+3. **General 16-byte (`8`-halfword) ACSM descriptor packet (`hw[0..7]`) and training burst at entry `200` (`CSR[0x041320..]`)**:
+   - Beyond `MRW` and `NOP`, each ACSM SRAM instruction slot occupies 16 bytes (`8` 16-bit halfwords `hw[0..7]`):
+     - **`hw[3]` (byte offset `+0x6`) — command code**: `0x0000` (`DES/NOP`, with `hw[4] = 0`), `0x000c` (burst/strobe command with attributes), `0x000d`, `0x0018`, `0x0020`, `0x0038`, `0x0040`, `0x0050`, `0x0058`, `0x0060`, `0x0068`, `0x0078`, `0x0080`, and `0x00d0` (plus `0x1000` flag when enabled).
+     - **`hw[4]` (byte offset `+0x8`) — payload**: mode-register data (`OP`) for `MRW`, or 3-bit / 6-bit command attributes for bus commands.
+     - **`hw[5]` (byte offset `+0xA`) — condition / rank bits**: 2-bit rank/condition selector (`0..3`, or `0` when suppressed).
+     - **`hw[7]` (byte offset `+0xE`) — attribute control word**: command timing/attribute mask.
+   - **Data-eye training burst (`ACSM entry 200`, halfword offset `800`, `CSR[0x041320..]`)**:
+     - Instead of running from entry `0`, candidate sweeps compile the training read/write burst **once** starting at ACSM entry **`200`** (`CSR[0x020022 + pstate] = 200`) and store `end_idx = entries_used - 1` (`CSR[0x020023 + pstate] = end_idx`, e.g., entry `219` at `0x4136c` in the `E1` capture).
+     - The burst generator configures `CSR[0x020079] = 0x0040`, sets `CSR[0x01f0b3] = 1`, `CSR[0x01f0b4] = 1`, `CSR[0x01f0b1] = 1`, `CSR[0x01f0b0] = (DfiFreqRatio == 4) ? 0x34 : 0x30`, and branches on the configured `Pattern`:
+       - **Pattern in `{0, 2, 8}`** (used in 2D `RdDQS` and `WrDq` sweeps with `Pattern = 0`): emits the 20-entry command sequence matching `E1` ACSM entries `200..219` (`0x41320..0x4136c`).
+       - **Pattern in `{4, 7}`** (used in 1D `RdDQS`): emits the 1D read-burst variant (`DES/NOP` `0x0000` spacers, command `0x000c`, command `0x0050`, trailing `DES/NOP` flushes).
+
 #### Summary of `DevInit`-written CSRs outside `phypara`
 
 The following CSRs are written by `DevInit` to sequence hardware state machines, resets, and the ACSM sequencer, and are **not** part of the 5,170-entry `phypara` table:
@@ -486,27 +497,70 @@ The following CSRs are written by `DevInit` to sequence hardware state machines,
 
 By contrast, in the `0x0200c0`–`0x0200cf` range, `CSR[0x0200c3]` (`0x0001`), `CSR[0x0200c6]` (`0x0010`), and `CSR[0x0200cd]` (`0x0001`) hold hardware power-on reset values that are never read by the PMU (`0x0200c5`, `0x0200c7`, `0x0200ca`, and `0x0200cc` are unimplemented and read as `0`), `CSR[0x0200cf]` reads `0x001f` at idle/reset (sampled live into `CSR[0x02004e + pstate]` while `CSR[0x02f0e0] == 1` during DLL recalibration before returning to `0x001f` once `0x02f0e0` clears to `0`), `CSR[0x0200c9]` (`0` references) is never polled by the PMU, and `CSR[0x020314]` / `CSR[0x020315]` (`ARC 0x90040628` / `0x9004062a`) are read-only hardware calibration output registers (`0` writes in host or PMU code) read by `Step 6.1`. In groups `0x0c` and `0x0d`, **the PMU never writes to `CSR[0x0c0080]` (`ARC 0x90180100`, read once in Phase 2), `CSR[0x0c0086]` (`ARC 0x9018010c`, 0 references in PMU firmware), or `CSR[0x0c00ee]` (`ARC 0x901801dc`, read once at startup to populate `byte[0x80000403] = 8..10`)**; the `2 -> 3 -> 7` transitions on `0x0c0080` are performed exclusively by the host SPL, and `0x0c0086` reflects hardware/host status. Neither `CSR[0x0d0036]` nor P-state SRAM (`0x0a0000`) is accessed during `DevInit`.
 
-## Candidate evaluation and eye construction
+## Candidate evaluation, hardware transfer-and-compare, and eye construction
 
-A behavioral training stage performs the following operations:
+### Hardware transfer-and-compare primitive
 
-1. Select a candidate delay, VREF, DCA, DFE, or latency configuration.
-2. Apply it to the correct channel/rank/lane or group.
-3. Transfer the selected training pattern and compare the returned data.
-4. Repeat comparisons for the configured number of bit times.
-5. Classify the candidate and construct passing/failing regions.
-6. Select an interior operating point rather than simply the first passing point.
-7. Program the selected value and publish applicable result/margin fields.
+Data comparison during eye sweeps is performed **entirely in PHY hardware**—the PMU never reads DQ words back to compare them in software:
 
-`BitTimeControl[2:0]=n` selects `2^n` times the base comparison count per candidate. The base count, mismatch tolerance, PRBS/pattern lengths, and whether any mismatches are allowed are unknown. Thus, this document cannot define a bit-error-rate threshold for reference compatibility.
+1. **Pattern configuration**:
+   - **PHY pattern generator**: configures `CSR[0x070061..64] = 0xffff`, per-lane `CSR[0x07<lane>024..2b]` and `CSR[0x07<lane>062]`, and group controls `CSR[0x07f011]`, `CSR[0x07f0d6/d7]`, and `CSR[0x07f060]`.
+   - **DRAM pattern mode registers**: when `Pattern` is in `{1, 3..7}`, programs **`MR20`, `MR33`, `MR34`, `MR31`, and `MR32`** (`ACSM` `MRW` bursts).
+   - **ACSM burst compilation**: compiles the command sequence once into ACSM SRAM starting at entry **`200`** (`CSR[0x041320..]`, storing `end_idx = entries_used - 1`).
+2. **Per-point candidate execution**:
+   - Issue one channel-commit pulse `CSR[0x02f0a0]` (`1 -> delay -> 0`) before entering the candidate sweep loop.
+   - Write dbyte-broadcast VREF `CSR[0x01<dbyte>fb5]` (`ARC 0x90021f6a | (dbyte << 13)`) = `(vref << 10) | 0x0001` (or `| 0x4001` when alternate mode bit `14` is enabled), where bits `[13:10]` hold the 4-bit VREF DAC step; fine VREF updates perform a read-modify-write on `CSR[0x01<dbyte>0b5]` preserving `& 0xc3ff` (bits `[15:14]` and `[9:0]`) and replacing `[13:10]`.
+   - Write candidate delay in dbyte lane-broadcast mode (`CSR[0x01<dbyte>f<reg>]`, `ARC 0x90021e00 | ...`).
+   - Point the sequencer to the prebuilt burst (`CSR[0x020022 + pstate] = 200`, `CSR[0x020023 + pstate] = end_idx`) and run a one-shot trigger (`CSR[0x020027] = 0`, `delay_dfi_clks(6)`, `CSR[0x020020] = 1`, poll `CSR[0x020021] != 0`, `CSR[0x020020] = 0`).
+   - Read each enabled lane's 16-bit hardware pass/fail result from **`CSR[0x01<dbyte><lane>b7]`** (`ARC 0x9002016e | ...`), then clear sticky error flags via broadcast **`CSR[0x01f0bb] = 0x03ff -> 0`** (`ARC 0x9003e176`).
 
-For 2D training, candidates span delay and voltage. The selected point optimizes a combined margin:
+`BitTimeControl[2:0]=n` scales the base comparison count (`2^n` multiplier); resting/default per-lane comparison state uses `0x41` (or `0xc1` when `byte[0x80000403] == 2`) gated by the active lane mask, with a data-rate branch above `1599 MT/s`. Mismatch tolerance and whether any bit errors are allowed in non-zero modes remain unverified in bench testing.
 
-```text
-score = delay_margin * delay_weight + voltage_margin * voltage_weight
-```
+### 2D eye centroid and margin accumulation
 
-Separate RX and TX weight pairs occupy message offsets `0x20/0x21` and `0x17/0x18`. Each weight is 0–31. One may be zero; if both are zero, each is treated as 1.
+For 2D stages (`RdDQS`, `WrDq`, `PHY DCA`), the candidate pass/fail results build a **64-row (`row = 0..63`) VREF histogram** storing per-row passing delay bounds `(lo, hi)` (`0..127` taps):
+
+1. **2D centroid (`X_c`, `Y_c`)**:
+   - Each row of width `n = (hi - lo) + 1` (skipped if `hi < lo`) contributes weight `w` selected by **`Train2DMisc[12:11]`** (`halfword[0x8000000a] & 0x1800`):
+     - `0`: `w = n` (linear width);
+     - `1` (`0x0800`): `w = n^2` (quadratic width);
+     - `2` / `3` (`0x1000` / `0x1800`): `w` is an integer tier `0..7` derived from the active bits of `n`.
+   - When `sum(w) > 0`, the firmware computes rounded centers:
+     ```text
+     X_c = (sum(w * (lo + hi)) / sum(w) + 1) >> 1    /* horizontal delay center */
+     Y_c = (2 * sum(w * row)    / sum(w) + 1) >> 1    /* vertical VREF row (0..63) */
+     ```
+     If `sum(w) == 0`, the routine returns fallback status `3` without updating centers.
+2. **Minimum margin accumulation (`0x037`–`0x03e`, `0x052`–`0x059`)**:
+   - Starting from row `Y_c`, walk rows downward and upward while `lo < X_c < hi` to find the passing vertical span `[Y_min, Y_max]` along the selected delay `X_c`.
+   - Compute vertical VREF margin `m_v = min(Y_max - Y_c, Y_c - Y_min)` (in VREF histogram rows) and horizontal delay margin `m_h = min(hi[Y_c] - X_c, X_c - lo[Y_c])` (in delay taps), then accumulate `min(existing, m_v)` at offset `+0` and `min(existing, m_h)` at offset `+1` of the rank's margin pair (`0x037/38`, `0x039/3a`, `0x03b/3c`, `0x03d/3e` for `A0`/`A1`; `0x052..0x059` for `B0`/`B1`).
+   - *(Observation on reference captures: in `E1`, the `+0` bytes `0x037`/`0x03b`/`0x052`/`0x056` hold `0x14`–`0x16` (`20`–`22` VREF rows) and `0x039`/`0x03d`/`0x054`/`0x058` hold `0x16`–`0x17`, whereas the `+1` bytes `0x038`/`0x03c`/`0x053`/`0x057` hold `0x27`–`0x29` (`39`–`41` delay taps) and `0x03a`/`0x03e`/`0x055`/`0x059` hold `0x20`–`0x25` (`32`–`37` delay taps)—consistent with `+0` receiving `m_v` and `+1` receiving `m_h` in the firmware's margin accumulator.)*
+
+### Per-stage hardware contracts (`WrLvl`, `RxEn`, `RdDQS`, `WrDq`, `MxRdLat`, `DCA`, `LPCA`)
+
+- **P-state bank selection (`(Pstate & 1) << 20`)**: When `Pstate[7] == 0`, startup applies parity-indexed bank selection adding `+0x200000` on odd P-states to ARC `0x9002xxxx` group `0x01` addresses (whether this selects mirror group `0x110000` in live hardware remains to be confirmed by an odd-P-state measurement).
+- **`WrLvl` (`SequenceCtrl[1]`)**:
+  - Clears `CSR[0x070011] = 0`, saves/restores `CSR[0x020042]` and `CSR[0x020044]`, sets `CSR[0x01f0b0] = 8`, `CSR[0x01f0b1] = 0x40`, `CSR[0x02f057] = 0xaa`, `CSR[0x020041] = 1`, `CSR[0x02002a] = 1`, `CSR[0x02003f]` bits `11`/`12`, and applies a 19-entry `6`-byte CSR init sequence (targeting `0x01f0a7..0x01ffbe` and `0x07ff28..2b = 0xffff`).
+  - Clears `CSR[0x01<dbyte>0<0x2a+rank>]` before sweeping, sweeps **`CSR[0x01<dbyte>f<0x2a+rank>]`** (lane broadcast `0xf`, offset `0x2a + rank`) against phase flag `CSR[0x01<dbyte>0b7]`, wraps/adjusts `CSR[0x01<dbyte>0<0x2a+rank>]` modulo `DfiFreqRatio << 6` and `-0x20` saturating at `0`, clears `0x01f0b0`/`0x01f0b1 = 0`, and updates AC CSRs `CSR[0x03<dbyte>0{2e,33,34,40..43}]` if custom AC settings (`EnCustomSettings` at `0x800000f4`, buffer `0x80000444`) are active while clearing `0x020042`/`0x020044`.
+- **`RxEn` (`SequenceCtrl[2]`)**:
+  - Selects its path from **`MR20_A0[0]`** (`byte[0x8000008e] & 1`), using `8` or `9` active lanes derived from `MR3`, `MR13`, `MR21`, and `MR22`, and retains per-rank gate state in runtime working storage.
+  - When `MR20_A0[0] == 0` (reference path): configures the PHY pattern generator and pattern MRs (`MR20/33/34/31/32`), enables lanes one-hot via `CSR[0x01f<lane>be]`, sweeps **`CSR[0x01<dbyte><lane>aa]`** (`0x400*C + 0x20*F` with `[9:6]` carry) reading `CSR[0x01<dbyte><lane>b7]`, and commits across all active lanes (`8` or `9`) into **`CSR[0x01<dbyte><lane><0x24+rank>]`**.
+  - When `MR20_A0[0] != 0`: uses a per-dbyte ACSM gate sweep and commits lane `0` into **`CSR[0x01<dbyte>0<0x20+rank>]`**.
+- **`RdDQS` (`SequenceCtrl[3]`)**:
+  - 1D pass runs `Pattern = 4` (if custom pattern bytes `0xe4..0xe6 == 0`, else `7`) with active lane mask `0xff` (`8` lanes) or `0x1ff` (`9` lanes).
+  - Unconditionally (when bit `3` is enabled and not suppressed by `Disable2D`), 2D `RdDQS` runs two passes (`Pattern = 0`) toggling **`MR46 = 1 -> 0`** via `CSR[0x01f001]` around two candidate sweeps, optionally streams `0x0076`/`0x0077` contours when `Train2DMisc[0] == 1`, computes `(X_c, Y_c)` and minimum margins, and writes **`CSR[0x01<r><l>4e]` / `CSR[0x01<r><l>4f]`** plus `CSR[0x00<r><l>12]` (`cs == 1` rank reconciliation). Because `CSR[0x010009] == 0x0000` on LPDDR5, **`CSR[0x01<r><l>50]`/`51` remain initial pre-training seeds and are never selected as final targets**.
+  - Additionally, when saved pre-training `CSR[0x020011]` (`0x8000042a`) bit `6` is set, `RdDQS 2D` runs two follow-up passes updating `CSR[0x010012]` (pass tag `0x80`) and `CSR[0x010010]`.
+- **`WrDq` (`SequenceCtrl[4]`)**:
+  - When `SequenceCtrl[4] == 0` and `SequenceCtrl != 1`: runs the non-sweeping fallback reading `WrLvl` `CSR[0x01<dbyte>0<0x2a+rank>] + 0x20` into `CSR[0x01<dbyte>0<0x28+rank>]` and committing all active lanes to `CSR[0x01<dbyte><lane><0x26+rank>]`.
+  - When `SequenceCtrl[4] == 1`: runs 1D `WrDq` (`Pattern = 0`, mask `(0xff or 0x1ff) | (MR22_A0[4] << 9)`) + bank reconciliation (`CSR[0x010026]`/`0x010028` gated by `Disable2D` `0x800000ce`), plus (when enabled by saved `CSR[0x020011]` bit `5` at `0x8000042a` and `MR22_A0[4]`) two 2D passes using the shared `MR46` + entry-200 burst engine updating `CSR[0x010026]` (pass tag `0xd4`) and `CSR[0x010028]` (pass tag `0xd4`), writing `CSR[0x01001c/1e]` and `CSR[0x010022]` and performing a 4-halfword RMW on `CSR[0x010068..6e]`.
+- **`MxRdLat` (`SequenceCtrl[9]`)**:
+  - Reads `CSR[0x0100b0]` / `CSR[0x0100bd]`, configures `CSR[0x01f0b9]`, `CSR[0x01ffb0]`, `CSR[0x02f00d]`, `CSR[0x07f011]`, and `CSR[0x07f060]`, executes an 11-slot ACSM command sequence (interleaved `DES/NOP`, command `0x000c`, `0x0060`, `0x0020`), and records per-rank words in runtime storage.
+- **`PHY DCA` (`SequenceCtrl[7]` Read / `SequenceCtrl[8]` Write)**:
+  - Publishes stage mode `0x11` (Read DCA) or `0x12` (Write DCA) to `CSR[0x01f007]`, reuses the shared `MR46` + entry-200 ACSM sweep engine across 3 sweep passes, accesses `CSR[0x010000]`, `CSR[0x01004e]`, `CSR[0x01f009]`, saves/clears per-lane `CSR[0x01<dbyte><lane>80]`, and performs additional per-instance group `0x01` read/write adjustments whose full CSR list remains to be cataloged on hardware.
+- **`DRAM DCA` (`SequenceCtrl[6]`)**:
+  - Bus-command sequence (no 2D eye sweep) configuring `CSR[0x010072]`, `CSR[0x01f00a]`, and `CSR[0x02002a]`, issuing `3` `MRW`s + `CSR[0x02f0a0]` strobe + ACSM NOP wait, and triggering one-shot ACSM execution (`0x020020..21`).
+- **`LPCA` (`SequenceCtrl[12]`)**:
+  - Runs inside `DevInit` tail, programming group `0x03` AC/CA-CS CSRs (`CSR[0x030001/02/90]`, `0x030801`, `0x031090`, `0x030f01`, `0x03f001/02`) and executing post-`DevInit` CA/VREF-CA `MRW` propagation unless suppressed by `MsgMisc[7]`.
 
 `Train2DMisc` additionally controls iteration count, seeds, contour output, optimization method, and RX VREF runtime range selection. The exact optimizer need not be copied to satisfy the external contract, but its resulting CSR/MR state and reported margins must be coherent.
 
@@ -527,7 +581,7 @@ Each is the **minimum across all eyes in that timing group**, not an average and
 margin = min(c - L, R - c)
 ```
 
-The exact treatment of scan boundaries, unobserved failures, truncated eyes, rounding, and saturated values is not established. Do not infer `2 * margin` as a standards-compliant eye width without resolving those cases.
+Exact boundary clamping when no failure is observed inside `[0, max]` and mismatch-tolerance rules for non-zero error thresholds remain unverified by bench testing. Do not assume `2 * margin` equals full standards-compliant eye width without validating boundary cases.
 
 `DFIMRLMargin` is different: it is an input safety increment in DFI clocks added to the smallest passing maximum-read-latency result. It must account for maximum expected positive `tDQSCK` drift over operating voltage and temperature; the interface recommends at least 1. This is not one of the four output eye margins.
 
@@ -595,8 +649,8 @@ Because the reference firmware's internal numeric thresholds are not part of the
 
 A fully cycle-compatible independent trainer still requires:
 
-- exact pass/fail comparison statistics and base bit-time count;
-- scan ordering, step rounding, truncated-eye handling, and center-selection details for each stage;
-- numeric margin/acceptance thresholds and convergence/retry criteria;
-- full streamed payload schemas and major-stage-to-algorithm mapping;
-- precise tap/DAC units and CSR programming sequences for every result.
+- mismatch tolerance and non-zero bit-error thresholds under `BitTimeControl` (the transfer-and-compare primitive, 2D centroid weighting, and `min()` margin accumulation are resolved above);
+- truncated-eye boundary clamping and stage-specific retry/convergence thresholds;
+- live odd-P-state confirmation of whether parity banking selects mirror group `0x110000` (`+0x200000` on ARC `0x9002xxxx`), additional group `0x01` CSRs modified by `PHY DCA`, and the host/runtime source of optional AC custom settings at `0x80000444`;
+- full payload schemas for the remaining diagnostic streaming IDs;
+- precise tap/DAC physical unit calibration across voltage and temperature.

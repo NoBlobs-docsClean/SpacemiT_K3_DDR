@@ -21,6 +21,7 @@ Several questions that were open in early hardware bring-up are now **fully reso
 4. **2D eye contour streaming format (`0x0076` / `0x0077`) and PHY ODT/drive response curves (Resolved)**: Enabling `Train2DMisc[0] = 1` with `HdtCtrl = 0x05` streams 1,296 2D eye contours (`0x00760004` header + 64× `0x00770003` row slices), and sweeping PHY TX drive strength (`0x01<r>040`) and RX ODT (`0x01<r>048`) established the pass/fail step function (`<= 40 Ω`) and monotonic eye-width curve (`42` to `106` taps; see [04-parts-topologies-and-timings.md](04-parts-topologies-and-timings.md)).
 5. **PHY hardware version (`CSR[0x0c00ee]`), signature canary (`0x00f26745` at `CSR[0x09002e]`/`0x09002f`), and `PmuRevision = 0x2409` (Resolved)**: At startup, the PMU decodes `CSR[0x0c00ee] & 0x0fff` (`ARC 0x901801dc`) into `byte[0x80000403]` (`8`–`10` on K3), writes the 32-bit signature canary `0x00f26745` (`0x6745`, `0x00f2`) to the 16-bit registers `CSR[0x09002e]`/`0x09002f` (`ARC 0x9012005c`/`0x9012005e`), verifies that they match the host-supplied comparison words at DMEM `0x80000424` (`0x6745`) and `0x80000426` (`0x00f2`) (aborting with `0x000000ff` on mismatch), and writes `PmuRevision = 0x2409` to `0x80000002` (see [07-training-behavior.md](07-training-behavior.md) and [12-arc-execution-environment.md](12-arc-execution-environment.md)).
 6. **Absence of LPDDR5 `MRR` readback in the PMU firmware (Resolved)**: The PMU firmware never issues LPDDR5 Mode Register Reads (`MRR`) and contains no `MRR` readback CSR path; all mode-register interactions use `MRW` and `MPC` bursts through the ACSM sequencer.
+7. **Hardware transfer-and-compare engine, 2D eye centroid/margin calculation, general 8-halfword ACSM command encoding, and per-stage hardware CSR flows (Resolved)**: Data comparison during sweeps runs in PHY hardware via pattern generator setup (`0x070061..64`, `0x07<l>024..2b`, `0x07f011`/`d6`/`d7`/`60`), DRAM pattern MRs (`MR20`/`31`–`34`), ACSM entry-`200` (`CSR[0x041320..]`) bursts, per-dbyte VREF (`CSR[0x01<dbyte>fb5]`, bits `[13:10]`, `& 0xc3ff` RMW preserving `[15:14]`/`[9:0]`) and lane-broadcast delay (`CSR[0x01<dbyte>f<reg>]`) writes, hardware pass/fail flag reads (`CSR[0x01<dbyte><lane>b7]`), and sticky clears (`CSR[0x01f0bb] = 0x03ff -> 0`). 2D centroid `(X_c, Y_c)` weighting (`Train2DMisc[12:11]`), minimum-margin accumulation (`0x037`–`0x03e`/`0x052`–`0x059`), general `8`-halfword ACSM command descriptor encoding (`hw[3..7]`), execution order (`SequenceCtrl` + `DisableTrainingLoop` retraining gates), and stage-level CSR contracts for `WrLvl`, `RxEn`, `RdDQS`, `WrDq`, `MxRdLat`, `PHY DCA`, `DRAM DCA`, and `LPCA` are specified in [07-training-behavior.md](07-training-behavior.md).
 
 ---
 
@@ -42,9 +43,9 @@ A full-training capture emits the major message sequence `0d 00 01 02 fd 06 01 0
 
 ## Unresolved training and behavioral questions
 
-### 4. Internal eye-acceptance and retry criteria
+### 4. Remaining eye-acceptance thresholds and truncated-eye boundary policy
 
-How the PMU training algorithm decides that a candidate delay/VREF point or an entire 1D/2D eye passes—including the base comparison count for `BitTimeControl = 0`, allowed bit-error count (if any), minimum acceptable eye width/margin (`RxClkDly_Margin`, `VrefDac_Margin`, `TxDqDly_Margin`, `DeviceVref_Margin`), and maximum retraining loop iterations—is not established.
+The hardware transfer-and-compare primitive, 2D centroid `(X_c, Y_c)` weighting (`Train2DMisc[12:11]`), and minimum-margin accumulation (`0x037`–`0x03e`/`0x052`–`0x059`) are resolved in [07-training-behavior.md](07-training-behavior.md). What remains open is the base comparison count for `BitTimeControl = 0`, any non-zero error tolerance, truncated-eye boundary clamping, minimum acceptable margin floors, and maximum retraining loop bounds.
 
 ### 5. Quantitative relationship between the `0x0076`/`0x0077` contour midpoint (~62.5 taps) and `CSR[0x4e]` (`0x2d`–`0x4a`)
 
@@ -66,15 +67,19 @@ Two sub-items remain unenumerated in the quickboot specification:
 
 ## Unresolved hardware questions
 
-### 8. ACSM SRAM (`0x41000` / `ARC 0x90082000`) specialized data-eye training pattern encoding
+### 8. Remaining ACSM training command details and `MRR` absence
 
-The Address/Command State Machine (ACSM) SRAM (`0x41000`–`0x41fff`, `ARC 0x90082000`–`0x90083ffe`), its group `0x02` sequencer control registers (`CSR[0x020020]`–`0x020031`, including the active-high `ACSM_DONE` status polarity on `CSR[0x020021]` where `1` = done/idle and `0` = busy, and the distinction between one-shot burst mode with `CSR[0x020031] == 0` and continuous background loop mode with `CSR[0x020031] == 1`), its clock dividers (`CSR[0x090808]` and `CSR[0x090813]` initialized from read-only hardware calibration outputs `CSR[0x020314]` and `CSR[0x020315]`, plus `& 0xff9f` masks on `CSR[0x09080b]`/`0x09080c`), and the 4-halfword instruction format used to issue LPDDR5 mode-register writes (`MRW-1` / `MRW-2`, such as `0xc9d8`/`0xc808` for `MR19 = 0x10`), ZQ calibration `MPC` bursts (`OP = 0x86`), and NOP delays (`0x2b00`) are documented in [07-training-behavior.md](07-training-behavior.md).
+The Address/Command State Machine (ACSM) SRAM (`0x41000`–`0x41fff`, `ARC 0x90082000`–`0x90083ffe`), its group `0x02` sequencer control registers (`CSR[0x020020]`–`0x020031`, active-high `ACSM_DONE` on `CSR[0x020021]`), its clock dividers (`CSR[0x090808]`/`0x090813`), the 4-halfword `MRW`/`MPC`/`NOP` encoding, the general 8-halfword (`hw[0..7]`) command descriptor format (`hw[3]` command code, `hw[4]` payload, `hw[5]` condition/cs, `hw[7]` attribute word), and the entry-`200` (`CSR[0x041320..]`) read/write training burst are documented in [07-training-behavior.md](07-training-behavior.md).
 
-The remaining open detail within the ACSM subsystem is the bit-level encoding of specialized continuous read/write burst loop instructions staged through DMEM `0x800009a8` into higher ACSM instruction slots (`CSR[0x020022] = 300`) during `RdDQS`, `WrDq`, and `DRAM DCA`. Note that if an independent trainer wishes to read LPDDR5 mode registers (`MR5`–`MR8`) via `MRR`, that requires defining a new host/ACSM `MRR` sequence, as the reference PMU firmware never performs `MRR`.
+What remains open within the ACSM subsystem is the detailed bitfield encoding of the `hw[7]` attribute/timing control word and the non-`MRW` bus command codes (`0x000c`, `0x0018`, `0x0038`, `0x0040`, `0x0050`, `0x0058`, `0x0060`, `0x0068`, `0x0078`, `0x0080`, `0x00d0`). Note that if an independent trainer wishes to read LPDDR5 mode registers (`MR5`–`MR8`) via `MRR`, that requires defining a new host/ACSM `MRR` sequence, as the reference PMU firmware never performs `MRR`.
 
-### 9. Bit-level definitions of internal PHY CSRs and physical lane-to-DQ mapping
+### 9. Remaining internal PHY CSR details, `PHY DCA` registers, and odd-P-state banking
 
-While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, the per-stage CSR write footprints, and the power-on reset nature of mirror group `0x110000` (`ARC 0x90220000`, never written by host tables or PMU firmware) are known, the exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`) remains open.
+While CSR access widths (16-bit), the `group/rank/lane/offset` index structure, the 69 `phypara` serialization segments, and the per-stage CSR programming sequences for `WrLvl`, `RxEn`, `RdDQS`, `WrDq`, `MxRdLat`, `DRAM DCA`, and `LPCA` are known ([07-training-behavior.md](07-training-behavior.md)), four specific hardware details remain open:
+1. Additional group `0x01` CSRs adjusted inside `PHY DCA` (`SequenceCtrl[7]`/`[8]`, alongside `CSR[0x01f007]`, `0x010000`, `0x01004e`, `0x01f009`, and per-lane `0x01<dbyte><lane>80`);
+2. Live odd-P-state hardware confirmation of whether parity-indexed bank selection (`(Pstate & 1) << 20` on ARC `0x9002xxxx`) maps group `0x01` CSRs to mirror group `0x110000` (`ARC 0x90220000`);
+3. Initial population source of the optional per-dbyte custom AC buffer (`0x80000444`, read when `EnCustomSettings != 0`);
+4. The exact physical mapping from `lane = 0..8` within each rank (`0..3`) to `ChA`/`ChB` DQ byte lanes and DBI/ECC slices (`L4..L7` on Controller 1 exhibit ~20-tap smaller `0x4e` values than `L0..L3, L8`).
 
 ### 10. Temperature derating curves and 4800 MT/s hardware measurements
 

@@ -94,6 +94,18 @@ The normal completion message is major message `0x07`. Mailbox waits in the refe
 
 The saved message returns through the reuse flow with its trained values; the quickboot control changes belong to the runtime working copy and are not evidence of a new training run.
 
+## Inferred: direct host-side `phypara` restoration constraints
+
+When a host loader restores saved `phypara` entries directly over PHY MMIO (for example, after running `DevInit` / `SequenceCtrl = 1` with `Quickboot = 0`, without a separate quickboot PMU image), entries fall into three distinct groups:
+
+1. **Recompute or keep live from the current boot (do not blindly overwrite with stale saved values)**:
+   - `CSR[0x090808]` and `CSR[0x090813]`, derived from the live non-`phypara` period registers `CSR[0x020314]` and `CSR[0x020315]` (`(val << 8) | 1`);
+   - `CSR[0x02000a]`, `CSR[0x020017]`, `CSR[0x020187]`, `CSR[0x020011]`, and `CSR[0x0c0086]`.
+2. **Blocklist — runtime strobe and state/control CSRs in `phypara` (skip writing)**:
+   - `CSR[0x020020]`, `CSR[0x020027]`, `CSR[0x020028]`, `CSR[0x02002a]`, `CSR[0x020031]`, `CSR[0x020041]`, `CSR[0x020060]`, and `CSR[0x020078]`. *(Other strobe/period CSRs such as `0x020021`, `0x0200a2`, `0x0200e3`, `0x0200e5`, `0x020314`, `0x020315`, `0x02f0a0`, `0x02f0a5`, `0x02f077`, and `0x01f0xx` are absent from the saved `phypara` table.)*
+3. **Trained per-lane/per-rank delays — restore only from a matching ODT & boot-path envelope**:
+   - `CSR[0x01<r><l>4e]`/`4f`, `CSR[0x01<r>0ad]`, `CSR[0x01<r>0af]`, `CSR[0x01<r>00f]`, `CSR[0x01<r>014]`, and `CSR[0x01<r>057]` must only be restored from an envelope captured under the same RX ODT setting (`CSR[0x010048/4a/4c/4d]`) and boot path. After writing each segment group, issue the configuration commit triad (`CSR[0x020028] = 1`, `CSR[0x02f0a5] = 1`, `CSR[0x02f077] = 0`).
+
 ## Inferred: implementation safeguards
 
 A replacement implementation should validate the envelope before touching the PHY, use a separate mutable message copy, and preserve the exact source/destination rank order. It should restore all three saved components rather than treating the MR mappings as a substitute for `phypara` or ACSM.

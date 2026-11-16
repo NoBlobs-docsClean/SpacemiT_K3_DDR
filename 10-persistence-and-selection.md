@@ -50,7 +50,9 @@ The populated size calculation is:
 
 `0x80 + 2 * 0x49a4 = 0x93c8`
 
-`DDR1` begins at `0x80 + 0x49a4 = 0x4a24`. The bytes from `0x93c8` through `0x97ff` are still part of the persistent object and still participate in its CRC. Complete plain-text hex dumps of the reference 6400 MT/s `DDRT` header and both controller records (`0x0000..0x93c7`, with instructions for reconstructing a zero-padded `0x9800` fixture) are published in [appendix-reference-envelope.md](appendix-reference-envelope.md).
+`DDR1` begins at `0x80 + 0x49a4 = 0x4a24`. The bytes from `0x93c8` through `0x97ff` are still part of the persistent object and still participate in its CRC. Complete plain-text hex dumps of the reference 6400 MT/s `DDRT` fixtures are published in two appendices:
+- [appendix-reference-envelope.md](appendix-reference-envelope.md): factory SPI capture (`CSR[0x020011] = 0x000f`, `crc32 = 0x0f7e240d`, `0x0000..0x93c7` with zero-padding instructions for `0x93c8..0x97ff`);
+- [appendix-reference-envelope-fdl.md](appendix-reference-envelope-fdl.md): index and complete dumps (`appendix-reference-envelope-fdl-{e1..e3,g1..g3,k1..k3}.md`) for all nine clean `60 Ω` default RX ODT (`CSR[0x010048] = 0x0c00`) USB/FDL full-training captures (`CSR[0x020011] = 0x006f`, zero-filled `0x93c8..0x97ff` tail).
 
 ### CRC coverage
 

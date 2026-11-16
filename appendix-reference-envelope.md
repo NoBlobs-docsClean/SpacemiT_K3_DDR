@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 <!-- Copyright (C) 2026 Thalles Campagnani -->
 
-[← Previous: Appendix: Streaming Catalog](appendix-streaming-catalog.md) | [Index](README.md#reading-order-and-contents)
+[← Previous: Appendix: Streaming Catalog](appendix-streaming-catalog.md) | [Index](README.md#reading-order-and-contents) | [Next: Appendix: Reference Envelope (USB/FDL) →](appendix-reference-envelope-fdl.md)
 
 # Appendix: Reference 6400 MT/s Training Envelope Data
 

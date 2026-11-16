@@ -112,6 +112,10 @@ Supported PHY impedance codes are `OFF = 0x00`, `120 Ω = 0x08`, `60 Ω = 0x0c`,
 
 **Interface + observation.** When the reference loader applies `io_override` entries on top of a base table, its table-walk filter checks whether `(override_offset & ~0x7fff)` matches the current base table's starting address. Because the `io_override` list only emits rank-global `lane 0` CSRs and specific message-block offsets, any override entry whose `(offset & ~0x7fff)` group does not match the active table pass is silently skipped. On the reference board, this causes `MR17` (`0x58041`, byte `0x082`) in the captured envelope to retain the base-table value **`0x2e`** rather than the `0x28` value computed by the I/O override helper. An independent host implementation should apply I/O overrides deterministically after all base and topology tables have been written, or preserve the exact `0x2e` `MR17` value expected by the reference profile.
 
+### Host pre-training `CSR[0x01<r>00f]` initialization
+
+**Interface + observation.** The reference pre-training table initializes all four per-rank CSRs `CSR[0x01<r>00f]` (`r = 0..3`: `0x01000f`, `0x01100f`, `0x01200f`, `0x01300f`) to **`0x1086`** (with bit 7 = `0x0080` set) at 6400 MT/s. Leaving bit 7 clear (`0x1006`) alters the initial value read before training (`0x01<r>00f` becomes `0x1004` rather than `0x1084` before host post-training writes `0x1089`). An independent host loader should write `0x1086` (bit 7 set) to all four `0x01<r>00f` entries prior to PMU start.
+
 ## Host DDRC timing dependencies
 
 Host-side DDRC timing selection is not a simple frequency scaling exercise:

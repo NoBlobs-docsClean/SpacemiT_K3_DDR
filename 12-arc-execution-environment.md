@@ -18,6 +18,10 @@ Facts confirmed by hardware probing and the host/PMU interface contract are mark
 - The host loads the firmware image into PMU IMEM at PHY CSR index `0x50000`, transferred as 16-bit halfwords.
 - Hardware probing demonstrated a complete **64 KiB IMEM** window: instructions at offsets up to `0xfff8` executed successfully. Note that in the quickboot loader path, the host decompression buffer is bounded to `0x6800` bytes (26,624 bytes), whereas the full-training loader path accommodates up to 64 KiB.
 - The host releases the PMU using the `MICRO_RESET = 9, 1, 0` sequence (`0xd0099`) and communicates exclusively through shared DMEM and the mailbox registers. There is no register-based parameter passing between host and PMU at reset.
+- **Host re-access to DMEM between PMU runs (without reloading IMEM)**: After a PMU execution completes, the host normally hands the bus mux to the ARC core (`MICRO_CONT_MUX_SEL = 1` at `0xd0000`) and may gate PMU clocks (`UCCLK_HCLK_ENABLES = 0x0002` at `0xc0080`). Simply pulsing `MICRO_RESET = 1 / 9` at `0xd0099` without restoring mux ownership and clocks leaves APB accesses to `0x58000+` isolated (reads return `0`, writes are dropped). To patch the message block and re-run without reloading IMEM:
+  1. Write `CSR[0x0d0099] = 0x0001` (`MICRO_RESET` stall), **`CSR[0x0d0000] = 0x0000`** (`MICRO_CONT_MUX_SEL = 0`, APB owns DMEM/CSRs), and **`CSR[0x0c0080] = 0x0007`** (`UCCLK_HCLK_ENABLES`, un-gate `uCclk`/`Hclk`).
+  2. Update the target message-block words at `0x58000+` (and restore clean initial values in `0x58200+` if the prior run mutated runtime globals).
+  3. Write **`CSR[0x0d0000] = 0x0001`** (`MICRO_CONT_MUX_SEL = 1`, ARC owns DMEM/CSRs) followed by `CSR[0x0d0099] = 9, 1, 0`.
 - The initial stack top is **`0x80010000`**, and the stack grows downward.
 
 The host's PHY CSR indexing convention is distinct from ARC addresses: a host `phy_reg[index]` accesses a 16-bit CSR through a 32-bit bus word at `DPHY_BASE + 4 * index`. ARC DMEM addresses (`0x8000xxxx`) and peripheral addresses (`0x90xxxxxx`) are in the PMU's native byte-addressed space, not host CSR indices.

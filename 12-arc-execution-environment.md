@@ -59,8 +59,8 @@ This low DMEM region is **live input and runtime state**, not zero-initialized s
 | Region / Purpose | Host DPHY Index | ARC Address | Contract |
 |---|---|---|---|
 | Message block (`0x140` bytes active, `0x400` reserved) | `0x58000`–`0x5809f` (`0x581ff`) | `0x80000000`–`0x8000013f` (`0x800003ff`) | Host input parameters and PMU output fields |
-| Host-provided `phypara` / parameter area | `0x58200`–`0x584d1` (full) / `0x58200`–`0x59621` (QB) | **`0x80000400`–`0x800009a3`** (full) / `0x80000400`–`0x80002c43` (QB) | Live configuration written by SPL plus PMU runtime state; **must not be zeroed** by startup |
-| Quickboot extra DMEM parameter table | `0x59622`–`0x598e7` | `0x80002c44`–`0x800031cf` | 1,420-byte (710-halfword) quickboot configuration table |
+| Host-provided `phypara` / parameter area | `0x58200`–`0x584d1` (full) / `0x58200`–`0x59631` (QB) | **`0x80000400`–`0x800009a3`** (full) / `0x80000400`–`0x80002c63` (QB) | Live configuration written by SPL plus PMU runtime state; **must not be zeroed** by startup |
+| Quickboot extra DMEM parameter table | `0x5aa00`–`0x5acc5` | `0x80005400`–`0x8000598b` | 1,420-byte (710-halfword, `491` non-zero) quickboot table; quickboot sets `gp = 0x80005400` (`[gp, 0x78] = 0x80000400` points to `phypara`) |
 | Independent firmware `.bss` / globals (recommended placement) | `0x5a000`+ | **`0x80004000`+** | Safe region for zero-initialized compiler `.bss` and static state |
 | Transient firmware/host scratch | `0x5f000`–`0x5f07f` | `0x8000e000`–`0x8000e0ff` | Read and cleared by host SPL; not persistent across phases |
 | Initial stack top | `0x60000` | `0x80010000` | Grows downward |

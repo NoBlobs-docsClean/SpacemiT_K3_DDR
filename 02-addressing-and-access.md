@@ -80,8 +80,8 @@ Host_MMIO_address = DPHY_BASE + 4 * host_dphy_index
 | `0x580a0` | `0x80000140` | Message block padding | Reserved tail of the `0x200`-halfword message reservation (through `0x800003ff`) |
 | `0x58200` | `0x80000400` | `phypara` / parameter area | Full training: pre-training DMEM tables (`0x58200`–`0x584d1`). Quickboot: 5170 serialized `phypara` halfwords |
 | `0x584d2` | `0x800009a4` | Full-training DMEM clear start | Cleared by host through `0x5ffff` (`0x8000ffff`) before full training; available for firmware `.bss` and stack |
-| `0x59622` | `0x80002c44` | Quickboot additional DMEM | `0x58000 + 0x200 + 5170`; holds the 1,420-byte (710-halfword) quickboot DMEM parameter table |
-| `0x5aa00` | `0x80005400` | Quickboot partial clear limit | The host zeroes the range below this index before loading the extra DMEM image, then zeroes the remainder through `0x5ffff` after loading it |
+| `0x59632` | `0x80002c64` | Quickboot pre-table zero fill | End of serialized `phypara` (`0x58000 + 0x200 + 5170`); zeroed by host up to `0x5aa00` |
+| `0x5aa00`–`0x5acc5` | `0x80005400`–`0x8000598b` | Quickboot additional DMEM | 1,420-byte (710-halfword) quickboot parameter and startup-script table (also quickboot `gp = 0x80005400`); remainder through `0x5ffff` is zeroed by host |
 | `0x60000` | `0x80010000` | DMEM limit / stack top | Upper limit of the 64 KiB DMEM window; initial ARC stack pointer (`sp = 0x80010000`, grows downward) |
 | `0xa0000` | *(via PHY CSRs)* | P-state SRAM | 16384-halfword resource; restoration is not active in the current flow |
 

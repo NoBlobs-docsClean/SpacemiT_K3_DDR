@@ -196,13 +196,13 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
 #### Broadcast alias `0x01f0xx` (`ARC 0x9003e0xx`), configuration commit strobe triad (`0x020028`, `0x02f0a5`, `0x02f077`), and channel-commit pulse (`0x02f0a0`)
 
 - **All-rank write broadcast (`CSR[0x01f0xx]` / `ARC 0x9003e000 + 2 * xx`)**: Within group `0x01`, rank index `0xf` (`0x01f0xx`, or `0x01f<l>xx`) is a **write-only hardware broadcast alias** that simultaneously updates all four ranks `r = 0..3` (`CSR[0x01<r>0xx]`, `ARC 0x90020000 + r * 0x2000 + 2 * xx`). Because `0x01f0xx` is write-only, the PMU always reads the current value from rank 0 (`CSR[0x0100xx]`) or rank `r` (`CSR[0x0100xx + r]`), modifies the target bitfield, and writes the result to `CSR[0x01f0xx]`.
-- **Configuration commit strobe triad (`0x020028`, `0x02f0a5`, `0x02f077`)**: Whenever the PMU updates PHY control CSRs and needs to latch/commit the configuration into the hardware state machine, it issues this three-write strobe sequence (~40 times across `DevInit`):
+- **Configuration commit strobe triad (`0x020028`, `0x02f0a5`, `0x02f077`)**: Whenever the PMU finishes configuring a logical initialization step or functional CSR block and needs to latch/commit the configuration into the hardware state machine, it issues this three-write strobe sequence (~40 times across `DevInit`, always at the end of a logical step—not per individual serialization segment):
   ```text
   CSR[0x020028] = 1    (ARC 0x90040050 = 1)
   CSR[0x02f0a5] = 1    (ARC 0x9005e14a = 1)
   CSR[0x02f077] = 0    (ARC 0x9005e0ee = 0)
   ```
-  Note that `CSR[0x020077]` (`ARC 0x900400ee`) is **never written directly by the PMU**; its `1 -> 0` transition observed in `phypara` is driven by the PHY hardware when `CSR[0x02f077] = 0` is strobed.
+  The write order **`0x020028` → `0x02f0a5` → `0x02f077`** is strict, with **no delay between the three consecutive stores** (any required settle `delay()` runs *after* the triad completes). Note that `CSR[0x020077]` (`ARC 0x900400ee`) is **never written directly by the PMU**; its `1 -> 0` transition observed in `phypara` is driven by the PHY hardware when `CSR[0x02f077] = 0` is strobed.
 - **Channel/rank timing commit pulse (`CSR[0x02f0a0]` / `ARC 0x9005e140`)**: Whenever the PMU finishes updating per-channel/per-rank ACSM muxing or lane timing registers (called from 12 sites across `Step 6.2`, `Step 6.3`, and subsequent training stages), it pulses `CSR[0x02f0a0]`:
   ```text
   CSR[0x02f0a0] = 1    (ARC 0x9005e140 = 1)
@@ -323,16 +323,16 @@ While comparing a `SequenceCtrl = 0x0001` capture against `0x0000` shows **68 ch
             4. Write `CSR[0x01<r>057 + pstate] &= ~0x0001` and `CSR[0x01<r>00f + pstate] &= ~0x0001`;
             5. Pulse `CSR[0x01<r>0ac]` bit 0 (`write old | 1` → `write old & ~1`);
             6. Copy **`CSR[0x01<r>0d6]`** (`ARC 0x900201ac + r * 0x2000`) to **`CSR[0x01<r>0af]`** (`ARC 0x9002015e + r * 0x2000`, serialized in `phypara` Segments 14–17: `0x0039`–`0x003b` on `DDR0` and `0x0038`–`0x003b` on `DDR1` in the SPI envelope, or `0x003a`–`0x0040` in USB/FDL runs).
-       3. **Broadcast restore after the rank loop and `CSR[0x01<r>00f]` lifecycle (`0x1086 -> 0x1084 -> 0x1089`)**:
+       3. **Broadcast restore after the rank loop and `CSR[0x01<r>00f]` lifecycle (`0x1086 -> 0x1006 -> 0x1004 -> 0x1089`)**:
           - Write `CSR[0x01f057 + pstate] = CSR[0x010057 + pstate] | 0x0001` (`ARC 0x9003e0ae`);
           - Write `CSR[0x01f00f + pstate] = (CSR[0x01000f + pstate] & ~0x0003) | 0x0001` (`ARC 0x9003e01e`);
           - Wait `delay_dfi_clks(((CSR[0x010014 + pstate] << 1) & 0x01fe) * 160 + 160)` (**`16,160` DFI clocks** for `CSR[0x010014] = 0x3232`);
           - Write `CSR[0x01f057 + pstate] = CSR[0x010057 + pstate] & ~0x0001`;
           - Write `CSR[0x01f00f + pstate] = CSR[0x01000f + pstate] & ~0x0001`.
-          - **Lifecycle of `CSR[0x01<r>00f]` (`0x1086 -> 0x1084 -> 0x1089`) and `CSR[0x01<r>057]`**:
-            - The host pre-training table (`training_table_49`) initializes `CSR[0x01<r>00f]` (`r = 0..3`) to **`0x1086`** at 6400 MT/s (with bit 7 = `0x0080` set; `0x0c86` at 4800 MT/s).
-            - `Step 3.6` does **not** restore bit 1 (`0x0002`) of `CSR[0x01<r>00f]`: starting from `0x1086`, the broadcast sequence leaves `CSR[0x01<r>00f]` at **`0x1084`** (`bits [2:0] = 0b100`; or `0x1004` if the pre-training seed was `0x1006` without bit 7).
-            - Then, **after the PMU halts and before `phypara` is serialized**, the **host post-training table (`training_table_8` in `phyinit_lp5_training()`)** explicitly writes **`CSR[0x01<r>057] = 0x0001`** and **`CSR[0x01<r>00f] = 0x1089`** across all four ranks `r = 0..3` (or `0x0c89` at 4800 MT/s). That is why the final serialized `phypara` (both SPI and FDL) holds `CSR[0x01<r>00f] = 0x1089` and `CSR[0x01<r>057] = 0x0001`.
+          - **Lifecycle of `CSR[0x01<r>00f]` (`0x1086 -> 0x1006 -> 0x1004 -> 0x1089`) and `CSR[0x01<r>057]`**:
+            - The host pre-training table initializes `CSR[0x01<r>00f]` (`r = 0..3`) to **`0x1086`** at 6400 MT/s (`0x0c86` at 4800 MT/s).
+            - `Step 3.5` masks `u_0f & 0xff78 | 0x0006` (which intentionally clears bits `[2:0]` and bit 7 = `0x0080`), turning `0x1086` into **`0x1006`**. `Step 3.6` then modifies `[1:0]` and leaves bit 1 cleared, leaving `CSR[0x01<r>00f]` at **`0x1004`** (`bits [2:0] = 0b100`, bit 7 clear) when the PMU finishes `DevInit`. No PMU step re-sets bit 7.
+            - Then, **after the PMU halts and before `phypara` is serialized**, the **host post-training table** explicitly writes **`CSR[0x01<r>057] = 0x0001`** and **`CSR[0x01<r>00f] = 0x1089`** across all four ranks `r = 0..3` (`0x0c89` at 4800 MT/s). That host post-training write is why `phypara` records `0x1089`.
           - *(Note: the per-rank channel-bit clear on `CSR[0x01f002 + rank]` at `ARC 0x9003e004 + 2 * rank`—clearing bit 0 for Channel A ranks `0..1` and bit 1 for Channel B ranks `2..3`—and its matching restore `CSR[0x01f002 + rank] = CSR[0x010002 + rank] | chan_mask` are performed by the rank-mux wrapper used around per-rank command/training sweeps.)*
    - **Step 3.7 (Master clock-period calibration)**:
      - Execute the **master clock-period calibration** sequence detailed above (3-step `0x0200e5`/`0x0200e3` strobe with bit 10 falling edge → `CSR[0x02000a]`, `CSR[0x020017]`, `CSR[0x020012] = 0x7353`, `CSR[0x020186] = 0x0073`, `CSR[0x020187] = 0x0041`, and per-rank `CSR[0x01<r>0d9] = 0x009c`).

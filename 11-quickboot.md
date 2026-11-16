@@ -94,17 +94,24 @@ The normal completion message is major message `0x07`. Mailbox waits in the refe
 
 The saved message returns through the reuse flow with its trained values; the quickboot control changes belong to the runtime working copy and are not evidence of a new training run.
 
-## Inferred: direct host-side `phypara` restoration constraints
+## Inferred: why direct host-only CSR restoration cannot substitute for quickboot
 
-When a host loader restores saved `phypara` entries directly over PHY MMIO (for example, after running `DevInit` / `SequenceCtrl = 1` with `Quickboot = 0`, without a separate quickboot PMU image), entries fall into three distinct groups:
+The reference quickboot sequence does **not** restore the 5,170 `phypara` halfwords over PHY MMIO CSRs from the host. Attempting to emulate quickboot by running full `DevInit` (`SequenceCtrl = 1`, `Quickboot = 0`) and writing saved `phypara` entries directly from the host over PHY MMIO omits three mandatory hardware steps performed only by the quickboot path:
 
-1. **Recompute or keep live from the current boot (do not blindly overwrite with stale saved values)**:
+1. **Quickboot PMU firmware execution (`lp5_quickboot` image + DMEM `0x58200`)**: The host places the modified `0x140`-byte message at DMEM `0x58000` (with reserved `0x200`-halfword stride) and the serialized 5,170-halfword `phypara` payload in **DMEM at `0x58200`** (alongside the quickboot extra DMEM table at `0x59622`), then executes the dedicated quickboot PMU image (`MICRO_RESET = 9, 1, 0` → completion `0x07` / failure `0xff`). Only the quickboot PMU firmware performs the per-boot PHY re-alignment (RxEn / DQS gating alignment, DLL / FIFO pointer reset—for which no standalone host CSR exists—and the PHY-side DFI handshake). Without running it, PHY FIFO/gating alignment remains bound to reset/prior-boot state, causing intermittent per-byte-lane read failures (such as a burst/word-offset shift on lane 1 or `0xff`/bit flips on lane 2; ~3/10 boots succeed purely by luck).
+2. **Pre-PMU MR-shadow updates (`MR12`, `MR14`, `MR15`, `MR24`, `MR30`)**: Before starting the quickboot PMU firmware, the host must populate the `MR12`/`MR14`/`MR15`/`MR24`/`MR30` message-block shadows from the trained VREF/DFE/DCA outputs so the quickboot firmware applies trained DRAM mode registers (restoring ACSM after halt does not replace those pre-PMU shadow updates).
+3. **Clearing `CSR[0x020037]` bit 6 before ACSM restoration**: Result collection sets `CSR[0x020037] |= BIT(6)`, and quickboot clears `CSR[0x020037] &= ~BIT(6)` after stopping the PMU and before writing ACSM (`0x41000`); leaving bit 6 set leaves the PHY in the wrong state for ACSM operation.
+
+For diagnostic experiments that still inspect or patch individual CSRs directly over MMIO after `DevInit` (`SequenceCtrl = 1`, `Quickboot = 0`), registers split into three rules:
+
+1. **Keep live or recompute from the current boot (never overwrite from an envelope)**:
    - `CSR[0x090808]` and `CSR[0x090813]`, derived from the live non-`phypara` period registers `CSR[0x020314]` and `CSR[0x020315]` (`(val << 8) | 1`);
-   - `CSR[0x02000a]`, `CSR[0x020017]`, `CSR[0x020187]`, `CSR[0x020011]`, and `CSR[0x0c0086]`.
-2. **Blocklist — runtime strobe and state/control CSRs in `phypara` (skip writing)**:
-   - `CSR[0x020020]`, `CSR[0x020027]`, `CSR[0x020028]`, `CSR[0x02002a]`, `CSR[0x020031]`, `CSR[0x020041]`, `CSR[0x020060]`, and `CSR[0x020078]`. *(Other strobe/period CSRs such as `0x020021`, `0x0200a2`, `0x0200e3`, `0x0200e5`, `0x020314`, `0x020315`, `0x02f0a0`, `0x02f0a5`, `0x02f077`, and `0x01f0xx` are absent from the saved `phypara` table.)*
-3. **Trained per-lane/per-rank delays — restore only from a matching ODT & boot-path envelope**:
-   - `CSR[0x01<r><l>4e]`/`4f`, `CSR[0x01<r>0ad]`, `CSR[0x01<r>0af]`, `CSR[0x01<r>00f]`, `CSR[0x01<r>014]`, and `CSR[0x01<r>057]` must only be restored from an envelope captured under the same RX ODT setting (`CSR[0x010048/4a/4c/4d]`) and boot path. After writing each segment group, issue the configuration commit triad (`CSR[0x020028] = 1`, `CSR[0x02f0a5] = 1`, `CSR[0x02f077] = 0`).
+   - `CSR[0x02000a]`, `CSR[0x020017]`, `CSR[0x020187]`, `CSR[0x020011]`, and `CSR[0x0c0086]`;
+   - **`CSR[0x01<r>0ad]`** (`2` after `Step 3.6`) and **`CSR[0x01<r>0af]`** (live calibration readout from `CSR[0x01<r>0d6]`: `0x38`–`0x3b` in SPI vs. `0x3a`–`0x40` in FDL, so overwriting `0x01<r>0af` from an SPI envelope on an FDL boot injects 2–5 taps of error).
+2. **Keep `DevInit` exit values intact (skip overwriting)**:
+   - `CSR[0x020020] = 0`, `CSR[0x020027] = 0`, `CSR[0x020028] = 1`, `CSR[0x02002a] = 1`, `CSR[0x020031] = 0`, `CSR[0x020041] = 0`, `CSR[0x020060] = 3` (`MemResetL`), and `CSR[0x020078] = 0`. Nothing in DDRC activation requires changing these after `DevInit`. *(Other strobe/period CSRs such as `0x020021`, `0x0200a2`, `0x0200e3`, `0x0200e5`, `0x020314`, `0x020315`, `0x02f0a0`, `0x02f0a5`, `0x02f077`, and `0x01f0xx` are absent from the saved `phypara` table.)*
+3. **Trained per-lane delays and commit triad granularity**:
+   - `CSR[0x01<r><l>4e]`/`4f`, `CSR[0x01<r>00f]`, `CSR[0x01<r>014]`, and `CSR[0x01<r>057]` must match the active RX ODT (`CSR[0x010048/4a/4c/4d]`) and boot path. When emitting the configuration commit triad (`CSR[0x020028] = 1` → `CSR[0x02f0a5] = 1` → `CSR[0x02f077] = 0`, strict order, no wait between the three stores), issue it once per **logical CSR block** (`0x01`, `0x02`, `0x03`, `0x07`, `0x09`, `0x0c`, `0x0d`) rather than after each of the 69 serialization segments.
 
 ## Inferred: implementation safeguards
 

@@ -114,7 +114,7 @@ Supported PHY impedance codes are `OFF = 0x00`, `120 Ω = 0x08`, `60 Ω = 0x0c`,
 
 ### Host pre-training `CSR[0x01<r>00f]` initialization
 
-**Interface + observation.** The reference pre-training table initializes all four per-rank CSRs `CSR[0x01<r>00f]` (`r = 0..3`: `0x01000f`, `0x01100f`, `0x01200f`, `0x01300f`) to **`0x1086`** (with bit 7 = `0x0080` set) at 6400 MT/s. Leaving bit 7 clear (`0x1006`) alters the initial value read before training (`0x01<r>00f` becomes `0x1004` rather than `0x1084` before host post-training writes `0x1089`). An independent host loader should write `0x1086` (bit 7 set) to all four `0x01<r>00f` entries prior to PMU start.
+**Interface + observation.** The reference pre-training table initializes all four per-rank CSRs `CSR[0x01<r>00f]` (`r = 0..3`: `0x01000f`, `0x01100f`, `0x01200f`, `0x01300f`) to **`0x1086`** at 6400 MT/s (`0x0c86` at 4800 MT/s). Inside `DevInit`, `Step 3.5` applies `(val & 0xff78) | 0x0006` (which clears bits `[2:0]` and bit 7 = `0x0080`, turning `0x1086` into `0x1006`), and `Step 3.6` leaves `CSR[0x01<r>00f]` at **`0x1004`**. After the PMU halts, the host post-training table explicitly restores bit 7 and sets operational mode by writing **`0x1089`** across all four ranks (the value captured in `phypara`). An independent host loader should write `0x1086` pre-training and `0x1089` post-training (no PMU step preserves or re-sets bit 7 during `Step 3.5`–`3.6`).
 
 ## Host DDRC timing dependencies
 
